@@ -8,9 +8,10 @@ from urllib.parse import quote
 import re
 
 from src.chat.message_receive.chat_manager import chat_manager
+from src.common.runtime_paths import get_runtime_root
 
 
-REPO_ROOT = Path(__file__).parent.parent.parent.parent.absolute().resolve()
+REPO_ROOT = get_runtime_root().resolve()
 SAFE_NAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
 

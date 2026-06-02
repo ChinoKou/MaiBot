@@ -27,10 +27,18 @@ from typing import (
 
 import asyncio
 import inspect
+import shutil
 
 import tomlkit
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import (
+    PLUGIN_STATE_MIGRATION_MARKER_NAME,
+    get_builtin_plugins_dir,
+    get_plugin_state_dir,
+    get_plugin_state_root,
+    get_plugins_dir,
+)
 from src.config.config import config_manager
 from src.config.file_watcher import FileChange, FileWatcher
 from src.platform_io import DeliveryBatch, InboundMessageEnvelope, get_platform_io_manager
@@ -132,14 +140,14 @@ class PluginRuntimeManager(
 
     @staticmethod
     def _get_builtin_plugin_dirs() -> List[Path]:
-        """内置插件目录：src/plugins/built_in/"""
-        candidate = Path("src", "plugins", "built_in").resolve()
+        """内置插件目录：bundle/source 中的 src/plugins/built_in/。"""
+        candidate = get_builtin_plugins_dir().resolve()
         return [candidate] if candidate.is_dir() else []
 
     @staticmethod
     def _get_third_party_plugin_dirs() -> List[Path]:
-        """第三方插件目录：plugins/"""
-        candidate = Path("plugins").resolve()
+        """第三方插件目录：运行根目录下的 plugins/。"""
+        candidate = get_plugins_dir().resolve()
         return [candidate] if candidate.is_dir() else []
 
     @classmethod
@@ -512,7 +520,7 @@ class PluginRuntimeManager(
 
         dependency_sync_state = await self._sync_plugin_dependencies(builtin_dirs + third_party_dirs)
         if dependency_sync_state.environment_changed:
-            logger.info("插件依赖流水线已更新当前 Python 环境，启动时将直接加载最新环境")
+            logger.info("插件依赖流水线已更新外置插件依赖目录，启动时将直接加载最新依赖")
 
         self.ensure_builtin_hook_specs_registered()
         platform_io_manager = get_platform_io_manager()
@@ -1232,6 +1240,10 @@ class PluginRuntimeManager(
             return
 
         watch_paths = [path.resolve() for path in self._iter_plugin_dirs() if path.is_dir()]
+        plugin_state_root = get_plugin_state_root().resolve()
+        plugin_state_root.mkdir(parents=True, exist_ok=True)
+        watch_paths.append(plugin_state_root)
+        watch_paths = list(dict.fromkeys(watch_paths))
         if not watch_paths:
             return
 
@@ -1408,7 +1420,29 @@ class PluginRuntimeManager(
 
     @staticmethod
     def _resolve_plugin_config_path(plugin_id: str, plugin_path: Path) -> Path:
-        return plugin_path / "config.toml"
+        state_dir = get_plugin_state_dir(plugin_id).resolve()
+        marker_path = state_dir / PLUGIN_STATE_MIGRATION_MARKER_NAME
+        if marker_path.exists():
+            return state_dir / "config.toml"
+
+        legacy_config_path = plugin_path / "config.toml"
+        legacy_backup_dir = plugin_path / "config_back"
+        if legacy_config_path.is_symlink() or legacy_backup_dir.is_symlink():
+            return state_dir / "config.toml"
+
+        target_config_path = state_dir / "config.toml"
+        if not target_config_path.exists() and legacy_config_path.is_file():
+            state_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_config_path, target_config_path)
+
+        target_backup_dir = state_dir / "config_back"
+        if legacy_backup_dir.is_dir() and not target_backup_dir.exists():
+            state_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(legacy_backup_dir, target_backup_dir)
+
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text("1\n", encoding="utf-8")
+        return target_config_path
 
     async def _handle_plugin_config_changes(self, plugin_id: str, changes: Sequence[FileChange]) -> None:
         """处理单个插件配置文件变化，并定向派发自配置热更新。

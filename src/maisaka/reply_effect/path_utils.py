@@ -2,9 +2,10 @@
 
 from pathlib import Path
 
+from src.common.runtime_paths import get_logs_dir
 from src.maisaka.display.preview_path_utils import build_preview_chat_dir_name, normalize_preview_name
 
-BASE_DIR = Path("logs") / "maisaka_reply_effect"
+BASE_DIR = get_logs_dir().resolve() / "maisaka_reply_effect"
 
 
 def build_reply_effect_chat_dir_name(session_id: str) -> str:

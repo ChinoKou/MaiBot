@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 
 logger = get_logger("webui")
 
@@ -24,9 +25,7 @@ class TokenManager:
             config_path: 配置文件路径，默认为项目根目录的 data/webui.json
         """
         if config_path is None:
-            # 获取项目根目录 (src/webui/core -> src/webui -> src -> 根目录)
-            project_root = Path(__file__).parent.parent.parent.parent
-            config_path = project_root / "data" / "webui.json"
+            config_path = get_data_dir().resolve() / "webui.json"
 
         self.config_path = config_path
         self.config_path.parent.mkdir(parents=True, exist_ok=True)

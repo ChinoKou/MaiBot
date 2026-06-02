@@ -12,6 +12,7 @@ from .exceptions import (
     InvalidTranslationFileError,
     LocaleNotFoundError,
 )
+from ..runtime_paths import get_locales_dir, get_runtime_root
 
 _FORMATTER = Formatter()
 _FALLBACK_DEFAULT_LOCALE = "zh-CN"
@@ -20,13 +21,13 @@ TranslationValue = str | dict[str, str]
 
 
 def get_project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return get_runtime_root().resolve()
 
 
 def get_locales_root(locales_root: Path | None = None) -> Path:
     if locales_root is not None:
         return locales_root.resolve()
-    return (get_project_root() / "locales").resolve()
+    return get_locales_dir().resolve()
 
 
 def normalize_locale(locale: str) -> str:

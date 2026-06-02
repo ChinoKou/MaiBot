@@ -21,6 +21,7 @@ from quick_algo import di_graph, pagerank
 
 from .utils.hash import get_sha256
 from .embedding_store import EmbeddingManager, EmbeddingStoreItem
+from src.common.runtime_paths import get_data_dir
 from src.config.config import global_config
 
 from .global_logger import logger
@@ -30,11 +31,9 @@ def _get_kg_dir():
     """
     安全地获取KG数据目录路径
     """
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    root_path: str = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
-    kg_dir = os.path.join(root_path, "data/rag")
+    kg_dir = get_data_dir().resolve() / "rag"
 
-    return str(kg_dir).replace("\\", "/")
+    return kg_dir.as_posix()
 
 
 # 延迟初始化，避免在模块加载时就访问可能未初始化的 local_storage

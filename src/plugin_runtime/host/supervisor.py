@@ -6,9 +6,8 @@ import asyncio
 import contextlib
 import json
 import os
-import sys
-
 from src.common.logger import get_logger
+from src.common.process_launcher import PLUGIN_RUNNER_PROCESS_ARG, build_self_launch_command
 from src.config.config import global_config
 from src.platform_io import DriverKind, InboundMessageEnvelope, RouteBinding, RouteKey, get_platform_io_manager
 from src.platform_io.drivers import PluginPlatformDriver
@@ -1439,10 +1438,9 @@ class PluginRunnerSupervisor:
         env = os.environ.copy()
         env.update(self._build_runner_environment())
 
+        command = build_self_launch_command(PLUGIN_RUNNER_PROCESS_ARG)
         self._runner_process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "src.plugin_runtime.runner.runner_main",
+            *command,
             env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,

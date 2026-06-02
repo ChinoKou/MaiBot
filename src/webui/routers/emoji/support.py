@@ -1,4 +1,3 @@
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,13 +9,15 @@ from sqlmodel import col, select
 from src.common.database.database import get_db_session
 from src.common.database.database_model import Images, ImageType
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 
 logger = get_logger("webui.emoji")
 
-THUMBNAIL_CACHE_DIR = Path("data/emoji_thumbnails")
+DATA_DIR = get_data_dir().resolve()
+THUMBNAIL_CACHE_DIR = DATA_DIR / "emoji_thumbnails"
 THUMBNAIL_SIZE = (200, 200)
 THUMBNAIL_QUALITY = 80
-EMOJI_REGISTERED_DIR = os.path.join("data", "emoji")
+EMOJI_REGISTERED_DIR = DATA_DIR / "emoji"
 EMOJI_DIR = EMOJI_REGISTERED_DIR
 
 _thumbnail_locks: Dict[str, threading.Lock] = {}

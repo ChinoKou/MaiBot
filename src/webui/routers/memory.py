@@ -14,6 +14,7 @@ from sqlmodel import col, select
 from src.A_memorix.host_service import a_memorix_host_service
 from src.common.database.database import get_db_session
 from src.common.database.database_model import PersonInfo
+from src.common.runtime_paths import get_data_dir
 from src.person_info.person_info import resolve_person_id_for_memory
 from src.services.memory_service import MemorySearchResult, memory_service
 from src.webui.dependencies import require_auth
@@ -21,7 +22,7 @@ from src.webui.dependencies import require_auth
 
 router = APIRouter(prefix="/memory", tags=["memory"], dependencies=[Depends(require_auth)])
 compat_router = APIRouter(prefix="/api", tags=["memory-compat"], dependencies=[Depends(require_auth)])
-STAGING_ROOT = Path(__file__).resolve().parents[3] / "data" / "memory_upload_staging"
+STAGING_ROOT = get_data_dir().resolve() / "memory_upload_staging"
 
 
 class NodeRequest(BaseModel):

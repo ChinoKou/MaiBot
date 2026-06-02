@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Optional, Tuple, cast, get_origin
 from fastapi import HTTPException
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import (
+    PLUGIN_STATE_MIGRATION_MARKER_NAME,
+    get_plugin_state_dir,
+    get_plugins_dir as get_runtime_plugins_dir,
+)
 from src.core.config_types import ConfigField
 from src.plugin_runtime.runner.manifest_validator import is_reserved_plugin_directory
 from src.webui.core import get_token_manager
@@ -192,12 +197,70 @@ def find_plugin_instance(plugin_id: str) -> Optional[Any]:
 
 
 def get_plugins_dir() -> Path:
-    plugins_dir = Path("plugins").resolve()
-    plugins_dir.mkdir(exist_ok=True)
+    plugins_dir = get_runtime_plugins_dir().resolve()
+    plugins_dir.mkdir(parents=True, exist_ok=True)
     return plugins_dir
 
+
+def get_plugin_state_path(plugin_id: str) -> Path:
+    state_path = get_plugin_state_dir(validate_plugin_id(plugin_id)).resolve()
+    state_path.mkdir(parents=True, exist_ok=True)
+    return state_path
+
+
+def resolve_plugin_state_id(plugin_id: str, plugin_path: Path) -> str:
+    """返回与运行时一致的插件状态目录 ID。"""
+
+    fallback_plugin_id = validate_plugin_id(plugin_id)
+    manifest = load_manifest_json(resolve_plugin_file_path(plugin_path, "_manifest.json"))
+    if manifest is None:
+        return fallback_plugin_id
+
+    manifest_id = str(manifest.get("id", "")).strip()
+    if not manifest_id:
+        return fallback_plugin_id
+
+    try:
+        return validate_plugin_id(manifest_id)
+    except HTTPException:
+        logger.warning(f"插件 manifest ID 非法，将回退到请求 ID: {manifest_id}")
+        return fallback_plugin_id
+
+
+def _mark_legacy_plugin_state_migrated(state_path: Path) -> None:
+    marker_path = state_path / PLUGIN_STATE_MIGRATION_MARKER_NAME
+    if marker_path.exists():
+        return
+    marker_path.write_text("1\n", encoding="utf-8")
+
+
+def _migrate_legacy_plugin_state(plugin_path: Path, state_path: Path) -> None:
+    """将旧插件代码目录中的 WebUI 管理文件迁移到外置状态目录。"""
+
+    marker_path = state_path / PLUGIN_STATE_MIGRATION_MARKER_NAME
+    if marker_path.exists():
+        return
+
+    legacy_config_path = resolve_plugin_file_path(plugin_path, "config.toml")
+    legacy_backup_dir = resolve_plugin_file_path(plugin_path, "config_back")
+    if legacy_config_path.is_symlink() or legacy_backup_dir.is_symlink():
+        raise HTTPException(status_code=400, detail="插件配置文件不能是符号链接")
+
+    target_config_path = state_path / "config.toml"
+    if not target_config_path.exists() and legacy_config_path.is_file():
+        shutil.copy2(legacy_config_path, target_config_path)
+
+    target_backup_dir = state_path / "config_back"
+    if legacy_backup_dir.is_dir() and not target_backup_dir.exists():
+        shutil.copytree(legacy_backup_dir, target_backup_dir)
+
+    _mark_legacy_plugin_state_migrated(state_path)
+
+
 def get_plugin_config_path(plugin_id: str, plugin_path: Path) -> Path:
-    return resolve_plugin_file_path(plugin_path, "config.toml")
+    state_path = get_plugin_state_path(resolve_plugin_state_id(plugin_id, plugin_path))
+    _migrate_legacy_plugin_state(plugin_path, state_path)
+    return state_path / "config.toml"
 
 
 def get_plugin_candidate_paths(plugin_id: str) -> Tuple[Path, Path]:
@@ -216,8 +279,13 @@ def is_plugin_install_residue(plugin_path: Path) -> bool:
         return False
 
     allowed_residue_files = {"config.toml"}
+    allowed_residue_dirs = {"config_back"}
     try:
-        return all(entry.is_file() and entry.name in allowed_residue_files for entry in plugin_path.iterdir())
+        return all(
+            (entry.is_file() and entry.name in allowed_residue_files)
+            or (entry.is_dir() and not entry.is_symlink() and entry.name in allowed_residue_dirs)
+            for entry in plugin_path.iterdir()
+        )
     except OSError:
         return False
 

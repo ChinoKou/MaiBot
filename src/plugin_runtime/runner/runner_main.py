@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Tuple, cast
+from typing import Any, Callable, Dict, Iterator, List, Optional, Protocol, Set, Tuple, cast
 
 import asyncio
 import contextlib
@@ -21,6 +21,7 @@ import inspect
 import json
 import logging as stdlib_logging
 import os
+import shutil
 import signal
 import sys
 import time
@@ -29,6 +30,7 @@ import tomllib
 import tomlkit
 
 from src.common.logger import get_console_handler, get_logger, initialize_logging
+from src.common.runtime_paths import PLUGIN_STATE_MIGRATION_MARKER_NAME, get_plugin_dependency_dir, get_plugin_state_dir
 from src.config.config_utils import compare_versions
 from src.plugin_runtime import (
     ENV_BLOCKED_PLUGIN_REASONS,
@@ -348,6 +350,7 @@ class PluginRunner:
         self._start_time: float = time.monotonic()
         self._shutting_down: bool = False
         self._reload_lock: asyncio.Lock = asyncio.Lock()
+        self._plugin_dependency_lock: asyncio.Lock = asyncio.Lock()
 
         # IPC 日志 Handler：握手成功后安装，将所有 stdlib logging 转发到 Host
         self._log_handler: Optional[RunnerIPCLogHandler] = None
@@ -560,34 +563,38 @@ class PluginRunner:
 
         llm_proxy.embed = _embed
 
-    def _apply_plugin_config(self, meta: PluginMeta, config_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _apply_plugin_config(self, meta: PluginMeta, config_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """在 Runner 侧为插件实例注入当前插件配置。
 
         Args:
             meta: 插件元数据。
-            config_data: 可选的配置数据；留空时自动从插件目录读取。
+            config_data: 可选的配置数据；留空时自动从插件状态目录读取。
 
         Returns:
             Dict[str, Any]: 归一化后的当前插件配置。
         """
         instance = meta.instance
-        default_config = self._get_plugin_default_config(instance)
-        raw_config = config_data if config_data is not None else self._load_plugin_config(meta.plugin_dir, meta.plugin_id)
-        normalization_result = self._normalize_plugin_config(
-            instance,
-            raw_config,
-            default_config=default_config,
-            suppress_errors=False,
-            enforce_version=True,
-        )
+        raw_config = config_data if config_data is not None else self._load_plugin_config(meta.plugin_id, meta.plugin_dir)
+        async with self._plugin_dependency_lock:
+            default_config = self._get_plugin_default_config(instance, meta.plugin_id)
+            normalization_result = self._normalize_plugin_config(
+                instance,
+                raw_config,
+                default_config=default_config,
+                suppress_errors=False,
+                enforce_version=True,
+                plugin_id=meta.plugin_id,
+            )
         plugin_config = normalization_result.normalized_config
-        config_path = Path(meta.plugin_dir) / "config.toml"
+        config_path = self._get_plugin_config_path(meta.plugin_id, meta.plugin_dir)
         should_initialize_file = not config_path.exists() and bool(default_config)
         if normalization_result.should_persist or should_initialize_file:
-            self._save_plugin_config(meta.plugin_dir, plugin_config)
+            self._save_plugin_config(meta.plugin_id, plugin_config)
         if hasattr(instance, "set_plugin_config"):
             try:
-                cast(_ConfigAwarePlugin, instance).set_plugin_config(plugin_config)
+                async with self._plugin_dependency_lock:
+                    with self._plugin_dependency_context(meta.plugin_id):
+                        cast(_ConfigAwarePlugin, instance).set_plugin_config(plugin_config)
             except Exception as exc:
                 logger.warning(f"插件 {meta.plugin_id} 配置注入失败: {exc}")
         return plugin_config
@@ -600,6 +607,7 @@ class PluginRunner:
         default_config: Optional[Dict[str, Any]] = None,
         suppress_errors: bool = True,
         enforce_version: bool = True,
+        plugin_id: str = "",
     ) -> PluginConfigNormalizationResult:
         """对插件配置做统一归一化处理。
 
@@ -615,7 +623,9 @@ class PluginRunner:
         """
 
         raw_config = dict(config_data or {})
-        latest_default_config = default_config if default_config is not None else self._get_plugin_default_config(instance)
+        latest_default_config = (
+            default_config if default_config is not None else self._get_plugin_default_config(instance, plugin_id)
+        )
         config_for_normalize = rebuild_plugin_config_data(raw_config, {})
         should_persist = False
 
@@ -646,9 +656,10 @@ class PluginRunner:
             )
 
         try:
-            normalized_config, normalized_changed = cast(_ConfigAwarePlugin, instance).normalize_plugin_config(
-                config_for_normalize
-            )
+            with self._plugin_dependency_context(plugin_id):
+                normalized_config, normalized_changed = cast(_ConfigAwarePlugin, instance).normalize_plugin_config(
+                    config_for_normalize
+                )
         except Exception as exc:
             if not suppress_errors:
                 raise
@@ -781,15 +792,99 @@ class PluginRunner:
         return bool(enabled_value)
 
     @staticmethod
-    def _save_plugin_config(plugin_dir: str, config_data: Dict[str, Any]) -> None:
-        """将插件配置写回到 ``config.toml``。
+    @contextlib.contextmanager
+    def _plugin_dependency_context(plugin_id: str) -> Iterator[None]:
+        """在插件调用期间临时加入该插件的外置依赖目录。"""
+
+        if not plugin_id:
+            yield
+            return
+
+        dependency_dir = get_plugin_dependency_dir(plugin_id).resolve()
+        if not dependency_dir.is_dir():
+            yield
+            return
+
+        normalized_path = os.path.normpath(str(dependency_dir))
+        existing_paths = {os.path.normpath(entry) for entry in sys.path}
+        inserted = normalized_path not in existing_paths
+        if inserted:
+            sys.path.insert(0, normalized_path)
+
+        previous_path = os.environ.get("PATH", "")
+        path_separator = os.pathsep
+        dependency_path_entries = [str(dependency_dir)]
+        if sys.platform == "win32":
+            dependency_path_entries.append(str(dependency_dir / "Scripts"))
+        else:
+            dependency_path_entries.append(str(dependency_dir / "bin"))
+        existing_path_entries = previous_path.split(path_separator) if previous_path else []
+        path_entries_to_add = [entry for entry in dependency_path_entries if entry and entry not in existing_path_entries]
+        if path_entries_to_add:
+            os.environ["PATH"] = path_separator.join([*path_entries_to_add, *existing_path_entries])
+
+        try:
+            yield
+        finally:
+            if inserted:
+                with contextlib.suppress(ValueError):
+                    sys.path.remove(normalized_path)
+            os.environ["PATH"] = previous_path
+
+    async def _call_plugin_handler(self, meta: PluginMeta, handler_method: Any, *args: Any, **kwargs: Any) -> Any:
+        """在插件依赖上下文中调用插件处理函数。"""
+
+        async with self._plugin_dependency_lock:
+            with self._plugin_dependency_context(meta.plugin_id):
+                result = handler_method(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+
+    @staticmethod
+    def _get_plugin_config_path(plugin_id: str, plugin_dir: str | None = None) -> Path:
+        """返回插件外置状态目录下的配置文件路径。"""
+
+        state_dir = get_plugin_state_dir(plugin_id).resolve()
+        if plugin_dir:
+            PluginRunner._migrate_legacy_plugin_state(Path(plugin_dir), state_dir)
+        return state_dir / "config.toml"
+
+    @staticmethod
+    def _migrate_legacy_plugin_state(plugin_dir: Path, state_dir: Path) -> None:
+        """将旧插件代码目录中的配置文件迁移到外置状态目录。"""
+
+        marker_path = state_dir / PLUGIN_STATE_MIGRATION_MARKER_NAME
+        if marker_path.exists():
+            return
+
+        legacy_config_path = plugin_dir / "config.toml"
+        legacy_backup_dir = plugin_dir / "config_back"
+        if legacy_config_path.is_symlink() or legacy_backup_dir.is_symlink():
+            return
+
+        target_config_path = state_dir / "config.toml"
+        if not target_config_path.exists() and legacy_config_path.is_file():
+            target_config_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_config_path, target_config_path)
+
+        target_backup_dir = state_dir / "config_back"
+        if legacy_backup_dir.is_dir() and not target_backup_dir.exists():
+            shutil.copytree(legacy_backup_dir, target_backup_dir)
+
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text("1\n", encoding="utf-8")
+
+    @staticmethod
+    def _save_plugin_config(plugin_id: str, config_data: Dict[str, Any]) -> None:
+        """将插件配置写回到 ``plugins/data/<plugin_id>/config.toml``。
 
         Args:
-            plugin_dir: 插件目录。
+            plugin_id: 插件 ID。
             config_data: 需要写回的配置字典。
         """
 
-        config_path = Path(plugin_dir) / "config.toml"
+        config_path = PluginRunner._get_plugin_config_path(plugin_id)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         if config_path.exists():
             try:
@@ -808,10 +903,10 @@ class PluginRunner:
             handle.write(tomlkit.dumps(config_data))
 
     @staticmethod
-    def _load_plugin_config(plugin_dir: str, plugin_id: str = "") -> Dict[str, Any]:
-        """从插件目录读取 config.toml。"""
-        _ = plugin_id
-        config_path = Path(plugin_dir) / "config.toml"
+    def _load_plugin_config(plugin_id: str, plugin_dir: str | None = None) -> Dict[str, Any]:
+        """从插件外置状态目录读取 config.toml。"""
+
+        config_path = PluginRunner._get_plugin_config_path(plugin_id, plugin_dir)
         if not config_path.exists():
             return {}
 
@@ -896,17 +991,18 @@ class PluginRunner:
             InspectPluginConfigResultPayload: 结构化解析结果。
         """
 
-        raw_config = config_data if use_provided_config else self._load_plugin_config(meta.plugin_dir)
+        raw_config = config_data if use_provided_config else self._load_plugin_config(meta.plugin_id, meta.plugin_dir)
         if use_provided_config and config_data is None:
             raw_config = {}
 
-        default_config = self._get_plugin_default_config(meta.instance)
+        default_config = self._get_plugin_default_config(meta.instance, meta.plugin_id)
         normalization_result = self._normalize_plugin_config(
             meta.instance,
             raw_config,
             default_config=default_config,
             suppress_errors=suppress_errors,
             enforce_version=enforce_version,
+            plugin_id=meta.plugin_id,
         )
         normalized_config = normalization_result.normalized_config
         changed = normalization_result.changed
@@ -1025,60 +1121,61 @@ class PluginRunner:
         instance = meta.instance
 
         # 从插件实例获取组件声明（SDK 插件须实现 get_components 方法）
-        if hasattr(instance, "get_components"):
-            meta.component_handlers.clear()
-            for comp_info in instance.get_components():
-                if not isinstance(comp_info, dict):
-                    continue
+        with self._plugin_dependency_context(meta.plugin_id):
+            if hasattr(instance, "get_components"):
+                meta.component_handlers.clear()
+                for comp_info in instance.get_components():
+                    if not isinstance(comp_info, dict):
+                        continue
 
-                component_name = str(comp_info.get("name", "") or "").strip()
-                raw_metadata = comp_info.get("metadata", {})
-                component_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                    component_name = str(comp_info.get("name", "") or "").strip()
+                    raw_metadata = comp_info.get("metadata", {})
+                    component_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
 
-                if component_name:
-                    handler_name = str(component_metadata.get("handler_name", component_name) or component_name).strip()
-                    meta.component_handlers[component_name] = handler_name or component_name
+                    if component_name:
+                        handler_name = str(component_metadata.get("handler_name", component_name) or component_name).strip()
+                        meta.component_handlers[component_name] = handler_name or component_name
 
-                components.append(
-                    ComponentDeclaration(
-                        name=component_name,
-                        component_type=str(comp_info.get("type", "") or "").strip(),
-                        plugin_id=meta.plugin_id,
-                        chat_scope=str(comp_info.get("chat_scope", "all") or "all").strip(),
-                        allowed_session=[
-                            str(item).strip()
-                            for item in comp_info.get("allowed_session", [])
-                            if str(item).strip()
-                        ]
-                        if isinstance(comp_info.get("allowed_session"), list)
-                        else [],
-                        metadata=component_metadata,
+                    components.append(
+                        ComponentDeclaration(
+                            name=component_name,
+                            component_type=str(comp_info.get("type", "") or "").strip(),
+                            plugin_id=meta.plugin_id,
+                            chat_scope=str(comp_info.get("chat_scope", "all") or "all").strip(),
+                            allowed_session=[
+                                str(item).strip()
+                                for item in comp_info.get("allowed_session", [])
+                                if str(item).strip()
+                            ]
+                            if isinstance(comp_info.get("allowed_session"), list)
+                            else [],
+                            metadata=component_metadata,
+                        )
                     )
-                )
-        if hasattr(instance, "get_config_reload_subscriptions"):
-            config_reload_subscriptions = list(instance.get_config_reload_subscriptions())
-        if hasattr(instance, "get_llm_providers"):
-            meta.llm_provider_handlers.clear()
-            for provider_info in instance.get_llm_providers():
-                if not isinstance(provider_info, dict):
-                    continue
+            if hasattr(instance, "get_config_reload_subscriptions"):
+                config_reload_subscriptions = list(instance.get_config_reload_subscriptions())
+            if hasattr(instance, "get_llm_providers"):
+                meta.llm_provider_handlers.clear()
+                for provider_info in instance.get_llm_providers():
+                    if not isinstance(provider_info, dict):
+                        continue
 
-                client_type = str(provider_info.get("client_type", "") or "").strip()
-                raw_metadata = provider_info.get("metadata", {})
-                provider_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-                if client_type:
-                    handler_name = str(provider_metadata.get("handler_name", client_type) or client_type).strip()
-                    meta.llm_provider_handlers[client_type] = handler_name or client_type
+                    client_type = str(provider_info.get("client_type", "") or "").strip()
+                    raw_metadata = provider_info.get("metadata", {})
+                    provider_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                    if client_type:
+                        handler_name = str(provider_metadata.get("handler_name", client_type) or client_type).strip()
+                        meta.llm_provider_handlers[client_type] = handler_name or client_type
 
-                llm_providers.append(
-                    LLMProviderDeclaration(
-                        client_type=client_type,
-                        name=str(provider_info.get("name", "") or "").strip(),
-                        description=str(provider_info.get("description", "") or "").strip(),
-                        version=str(provider_info.get("version", "1.0.0") or "1.0.0").strip() or "1.0.0",
-                        metadata=provider_metadata,
+                    llm_providers.append(
+                        LLMProviderDeclaration(
+                            client_type=client_type,
+                            name=str(provider_info.get("name", "") or "").strip(),
+                            description=str(provider_info.get("description", "") or "").strip(),
+                            version=str(provider_info.get("version", "1.0.0") or "1.0.0").strip() or "1.0.0",
+                            metadata=provider_metadata,
+                        )
                     )
-                )
 
         declared_client_types = sorted(meta.manifest.llm_provider_client_types)
         registered_client_types = sorted(provider.client_type for provider in llm_providers)
@@ -1097,7 +1194,7 @@ class PluginRunner:
             capabilities_required=meta.capabilities_required,
             dependencies=meta.dependencies,
             config_reload_subscriptions=config_reload_subscriptions,
-            default_config=self._get_plugin_default_config(instance),
+            default_config=self._get_plugin_default_config(instance, meta.plugin_id),
             config_schema=self._get_plugin_config_schema(meta),
         )
 
@@ -1120,11 +1217,12 @@ class PluginRunner:
             return False
 
     @staticmethod
-    def _get_plugin_default_config(instance: object) -> Dict[str, Any]:
+    def _get_plugin_default_config(instance: object, plugin_id: str = "") -> Dict[str, Any]:
         """获取插件默认配置。
 
         Args:
             instance: 插件实例。
+            plugin_id: 插件 ID，用于临时加入该插件的外置依赖目录。
 
         Returns:
             Dict[str, Any]: 默认配置；插件未声明时返回空字典。
@@ -1133,7 +1231,8 @@ class PluginRunner:
         if not hasattr(instance, "get_default_config"):
             return {}
         try:
-            default_config = cast(_ConfigAwarePlugin, instance).get_default_config()
+            with PluginRunner._plugin_dependency_context(plugin_id):
+                default_config = cast(_ConfigAwarePlugin, instance).get_default_config()
         except Exception as exc:
             logger.warning(f"读取插件默认配置失败: {exc}")
             return {}
@@ -1154,13 +1253,14 @@ class PluginRunner:
         if not hasattr(instance, "get_webui_config_schema"):
             return {}
         try:
-            schema = cast(_ConfigAwarePlugin, instance).get_webui_config_schema(
-                plugin_id=meta.plugin_id,
-                plugin_name=meta.manifest.name,
-                plugin_version=meta.version,
-                plugin_description=meta.manifest.description,
-                plugin_author=meta.manifest.author.name,
-            )
+            with PluginRunner._plugin_dependency_context(meta.plugin_id):
+                schema = cast(_ConfigAwarePlugin, instance).get_webui_config_schema(
+                    plugin_id=meta.plugin_id,
+                    plugin_name=meta.manifest.name,
+                    plugin_version=meta.version,
+                    plugin_description=meta.manifest.description,
+                    plugin_author=meta.manifest.author.name,
+                )
         except Exception as exc:
             logger.warning(f"构造插件配置 Schema 失败: {exc}")
             return {}
@@ -1198,9 +1298,7 @@ class PluginRunner:
             return True
 
         try:
-            result = instance.on_load()
-            if asyncio.iscoroutine(result):
-                await result
+            await self._call_plugin_handler(meta, instance.on_load)
             return True
         except Exception as exc:
             logger.error(f"插件 {meta.plugin_id} on_load 失败: {exc}", exc_info=True)
@@ -1217,9 +1315,7 @@ class PluginRunner:
             return
 
         try:
-            result = instance.on_unload()
-            if asyncio.iscoroutine(result):
-                await result
+            await self._call_plugin_handler(meta, instance.on_unload)
         except Exception as exc:
             logger.error(f"插件 {meta.plugin_id} on_unload 失败: {exc}", exc_info=True)
 
@@ -1234,7 +1330,7 @@ class PluginRunner:
         """
         self._inject_context(meta.plugin_id, meta.instance)
         try:
-            plugin_config = self._apply_plugin_config(meta)
+            plugin_config = await self._apply_plugin_config(meta)
         except PluginConfigVersionError as exc:
             logger.error(f"插件 {meta.plugin_id} 配置版本非法: {exc}")
             self._loader.purge_plugin_modules(meta.plugin_id, meta.plugin_dir)
@@ -1675,7 +1771,7 @@ class PluginRunner:
         # 回退: 旧版 LegacyPluginAdapter 通过 invoke_component 统一桥接
         if (handler_method is None or not callable(handler_method)) and hasattr(meta.instance, "invoke_component"):
             try:
-                result = await meta.instance.invoke_component(component_name, **invoke.args)
+                result = await self._call_plugin_handler(meta, meta.instance.invoke_component, component_name, **invoke.args)
                 resp_payload = InvokeResultPayload(success=True, result=result)
                 return envelope.make_response(payload=resp_payload.model_dump())
             except Exception as e:
@@ -1690,11 +1786,7 @@ class PluginRunner:
             )
 
         try:
-            result = (
-                await handler_method(**invoke.args)
-                if inspect.iscoroutinefunction(handler_method)
-                else handler_method(**invoke.args)
-            )
+            result = await self._call_plugin_handler(meta, handler_method, **invoke.args)
             resp_payload = InvokeResultPayload(success=True, result=result)
             return envelope.make_response(payload=resp_payload.model_dump())
         except Exception as e:
@@ -1733,9 +1825,7 @@ class PluginRunner:
             )
 
         try:
-            result = handler_method(operation=invoke.operation, request=invoke.request)
-            if inspect.isawaitable(result):
-                result = await result
+            result = await self._call_plugin_handler(meta, handler_method, operation=invoke.operation, request=invoke.request)
             resp_payload = InvokeResultPayload(success=True, result=result)
             return envelope.make_response(payload=resp_payload.model_dump())
         except Exception as exc:
@@ -1776,11 +1866,7 @@ class PluginRunner:
             )
 
         try:
-            raw = (
-                await handler_method(**invoke.args)
-                if inspect.iscoroutinefunction(handler_method)
-                else handler_method(**invoke.args)
-            )
+            raw = await self._call_plugin_handler(meta, handler_method, **invoke.args)
 
             # 规范化返回值：将 EventHandler 返回展平到 payload 顶层
             if raw is None:
@@ -1834,11 +1920,7 @@ class PluginRunner:
             )
 
         try:
-            raw = (
-                await handler_method(**invoke.args)
-                if inspect.iscoroutinefunction(handler_method)
-                else handler_method(**invoke.args)
-            )
+            raw = await self._call_plugin_handler(meta, handler_method, **invoke.args)
         except Exception as exc:
             logger.error(f"插件 {plugin_id} hook_handler {component_name} 执行异常: {exc}", exc_info=True)
             return envelope.make_response(
@@ -1900,17 +1982,17 @@ class PluginRunner:
             try:
                 config_scope = payload.config_scope.value
                 if config_scope == "self":
-                    self._apply_plugin_config(meta, config_data=payload.config_data)
+                    await self._apply_plugin_config(meta, config_data=payload.config_data)
                 if not hasattr(meta.instance, "on_config_update"):
                     raise AttributeError("插件缺少 on_config_update() 实现")
 
-                ret = meta.instance.on_config_update(
+                await self._call_plugin_handler(
+                    meta,
+                    meta.instance.on_config_update,
                     config_scope,
                     payload.config_data,
                     payload.config_version,
                 )
-                if asyncio.iscoroutine(ret):
-                    await ret
             except Exception as e:
                 logger.error(f"插件 {plugin_id} 配置更新失败: {e}")
                 return envelope.make_error_response(ErrorCode.E_UNKNOWN.value, str(e))
@@ -1932,25 +2014,28 @@ class PluginRunner:
             return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
 
         plugin_id = envelope.plugin_id
-        meta, is_temporary_meta, error_message = self._resolve_plugin_meta_for_config_request(plugin_id)
-        if meta is None:
-            return envelope.make_error_response(
-                ErrorCode.E_PLUGIN_NOT_FOUND.value,
-                error_message or f"未找到插件: {plugin_id}",
-            )
-
+        meta: Optional[PluginMeta] = None
+        is_temporary_meta = False
         try:
-            result = self._inspect_plugin_config(
-                meta,
-                config_data=payload.config_data,
-                use_provided_config=payload.use_provided_config,
-                suppress_errors=payload.use_provided_config,
-                enforce_version=not payload.use_provided_config,
-            )
+            async with self._plugin_dependency_lock:
+                meta, is_temporary_meta, error_message = self._resolve_plugin_meta_for_config_request(plugin_id)
+                if meta is None:
+                    return envelope.make_error_response(
+                        ErrorCode.E_PLUGIN_NOT_FOUND.value,
+                        error_message or f"未找到插件: {plugin_id}",
+                    )
+
+                result = self._inspect_plugin_config(
+                    meta,
+                    config_data=payload.config_data,
+                    use_provided_config=payload.use_provided_config,
+                    suppress_errors=payload.use_provided_config,
+                    enforce_version=not payload.use_provided_config,
+                )
         except Exception as exc:
             return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
         finally:
-            if is_temporary_meta:
+            if is_temporary_meta and meta is not None:
                 self._loader.purge_plugin_modules(plugin_id, meta.plugin_dir)
 
         return envelope.make_response(payload=result.model_dump())
@@ -1971,25 +2056,28 @@ class PluginRunner:
             return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
 
         plugin_id = envelope.plugin_id
-        meta, is_temporary_meta, error_message = self._resolve_plugin_meta_for_config_request(plugin_id)
-        if meta is None:
-            return envelope.make_error_response(
-                ErrorCode.E_PLUGIN_NOT_FOUND.value,
-                error_message or f"未找到插件: {plugin_id}",
-            )
-
+        meta: Optional[PluginMeta] = None
+        is_temporary_meta = False
         try:
-            inspection_result = self._inspect_plugin_config(
-                meta,
-                config_data=payload.config_data,
-                use_provided_config=True,
-                suppress_errors=False,
-                enforce_version=True,
-            )
+            async with self._plugin_dependency_lock:
+                meta, is_temporary_meta, error_message = self._resolve_plugin_meta_for_config_request(plugin_id)
+                if meta is None:
+                    return envelope.make_error_response(
+                        ErrorCode.E_PLUGIN_NOT_FOUND.value,
+                        error_message or f"未找到插件: {plugin_id}",
+                    )
+
+                inspection_result = self._inspect_plugin_config(
+                    meta,
+                    config_data=payload.config_data,
+                    use_provided_config=True,
+                    suppress_errors=False,
+                    enforce_version=True,
+                )
         except Exception as exc:
             return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
         finally:
-            if is_temporary_meta:
+            if is_temporary_meta and meta is not None:
                 self._loader.purge_plugin_modules(plugin_id, meta.plugin_dir)
 
         result = ValidatePluginConfigResultPayload(

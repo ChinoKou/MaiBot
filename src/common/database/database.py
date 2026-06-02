@@ -10,6 +10,7 @@ from sqlmodel import SQLModel, Session, create_engine
 
 from src.common.database.migrations import create_database_migration_bootstrapper
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 
 if TYPE_CHECKING:
     from sqlite3 import Connection as SQLite3Connection
@@ -20,8 +21,7 @@ logger = get_logger("database")
 
 
 # 定义数据库文件路径
-ROOT_PATH = Path(__file__).parent.parent.parent.parent.absolute().resolve()
-_DB_DIR = ROOT_PATH / "data"
+_DB_DIR = get_data_dir().resolve()
 _DB_FILE = _DB_DIR / "MaiBot.db"
 
 # 确保数据库目录存在

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 from src.webui.utils.network_security import validate_public_url
 
 logger = get_logger("webui.git_mirror")
@@ -56,7 +57,7 @@ class GitMirrorConfig:
     """Git 镜像源配置管理"""
 
     # 配置文件路径
-    CONFIG_FILE = Path("data/webui.json")
+    CONFIG_FILE = get_data_dir().resolve() / "webui.json"
 
     # 默认镜像源配置
     DEFAULT_MIRRORS = [

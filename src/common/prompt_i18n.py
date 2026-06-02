@@ -13,12 +13,13 @@ import re
 
 from .i18n import get_locale, t
 from .i18n.loaders import DEFAULT_LOCALE, extract_placeholders, normalize_locale
+from .runtime_paths import get_custom_prompts_dir, get_prompts_dir, get_runtime_root
 
 logger = logging.getLogger("maibot.prompt_i18n")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROMPTS_ROOT = (PROJECT_ROOT / "prompts").resolve()
-CUSTOM_PROMPTS_ROOT = (PROJECT_ROOT / "data" / "custom_prompts").resolve()
+PROJECT_ROOT = get_runtime_root().resolve()
+PROMPTS_ROOT = get_prompts_dir().resolve()
+CUSTOM_PROMPTS_ROOT = get_custom_prompts_dir().resolve()
 PROMPT_EXTENSIONS = (".prompt",)
 SAFE_SEGMENT_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 STRICT_ENV_KEYS = ("MAIBOT_PROMPT_I18N_STRICT", "MAIBOT_I18N_STRICT")

@@ -17,6 +17,7 @@ from src.common.data_models.llm_service_data_models import LLMGenerationOptions
 from src.common.database.database import get_db_session, get_db_session_manual
 from src.common.database.database_model import Images, ImageType
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 from src.common.utils.utils_image import ImageUtils
 from src.config.config import config_manager, global_config
 from src.plugin_runtime.hook_schema_utils import build_object_schema
@@ -28,8 +29,7 @@ logger = get_logger("emoji")
 
 install(extra_lines=3)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = get_data_dir().resolve()
 EmojiRegisterStatus = Literal["registered", "skipped", "failed"]
 EMOJI_DIR = DATA_DIR / "emoji"  # 表情包存储目录
 MAX_EMOJI_FOR_PROMPT = 20  # 最大允许的表情包描述数量于图片替换的 prompt 中

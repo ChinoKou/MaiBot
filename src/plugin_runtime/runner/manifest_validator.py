@@ -20,6 +20,7 @@ from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_host_metadata_path, is_frozen_app
 
 logger = get_logger("plugin_runtime.runner.manifest_validator")
 
@@ -1123,15 +1124,85 @@ class ManifestValidator:
     @classmethod
     @lru_cache(maxsize=None)
     def _detect_default_host_version(cls, project_root: Path) -> str:
-        """从主程序 ``pyproject.toml`` 探测 Host 版本号。
+        """探测 Host 版本号。"""
 
-        Args:
-            project_root: 项目根目录。
+        if is_frozen_app():
+            metadata_version = cls._load_host_metadata_version()
+            if metadata_version:
+                return metadata_version
 
-        Returns:
-            str: 探测到的 Host 版本号；失败时返回空字符串。
-        """
-        pyproject_path = project_root / "pyproject.toml"
+        return cls._load_pyproject_version(project_root / "pyproject.toml")
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def _detect_default_sdk_version(cls, project_root: Path) -> str:
+        """探测当前运行环境中的 SDK 版本号。"""
+
+        if is_frozen_app():
+            metadata_version = cls._load_host_metadata_sdk_version()
+            if metadata_version:
+                return metadata_version
+
+        try:
+            raw_version = importlib_metadata.version("maibot-plugin-sdk")
+            if VersionComparator.is_valid_project_version(raw_version):
+                return raw_version
+        except importlib_metadata.PackageNotFoundError:
+            pass
+
+        return cls._load_pyproject_version(project_root / "packages" / "maibot-plugin-sdk" / "pyproject.toml")
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def _load_host_dependency_requirements(cls, project_root: Path) -> Dict[str, Requirement]:
+        """加载主程序声明的依赖约束。"""
+
+        if is_frozen_app():
+            metadata = cls._load_host_metadata()
+            if "dependencies" in metadata:
+                return cls._parse_requirement_texts(cls._load_host_metadata_dependencies())
+
+        return cls._load_pyproject_dependency_requirements(project_root / "pyproject.toml")
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def _load_host_metadata(cls) -> Dict[str, Any]:
+        """读取 PyInstaller 包内生成的 Host 元数据。"""
+
+        metadata_path = get_host_metadata_path()
+        try:
+            with metadata_path.open("r", encoding="utf-8") as metadata_file:
+                metadata = json.load(metadata_file)
+        except Exception:
+            return {}
+        return metadata if isinstance(metadata, dict) else {}
+
+    @classmethod
+    def _load_host_metadata_version(cls) -> str:
+        metadata = cls._load_host_metadata()
+        raw_version = str(metadata.get("host_version", "") or "").strip()
+        if VersionComparator.is_valid_project_version(raw_version):
+            return raw_version
+        return ""
+
+    @classmethod
+    def _load_host_metadata_sdk_version(cls) -> str:
+        metadata = cls._load_host_metadata()
+        raw_version = str(metadata.get("sdk_version", "") or "").strip()
+        if VersionComparator.is_valid_project_version(raw_version):
+            return raw_version
+        return ""
+
+    @classmethod
+    def _load_host_metadata_dependencies(cls) -> List[str]:
+        metadata = cls._load_host_metadata()
+        raw_dependencies = metadata.get("dependencies", [])
+        if not isinstance(raw_dependencies, list):
+            return []
+        return [str(dependency or "").strip() for dependency in raw_dependencies if str(dependency or "").strip()]
+
+    @staticmethod
+    def _load_pyproject_version(pyproject_path: Path) -> str:
         try:
             with pyproject_path.open("rb") as pyproject_file:
                 pyproject_data = tomllib.load(pyproject_file)
@@ -1148,51 +1219,7 @@ class ManifestValidator:
         return ""
 
     @classmethod
-    @lru_cache(maxsize=None)
-    def _detect_default_sdk_version(cls, project_root: Path) -> str:
-        """探测当前运行环境中的 SDK 版本号。
-
-        Args:
-            project_root: 项目根目录。
-
-        Returns:
-            str: 探测到的 SDK 版本号；失败时返回空字符串。
-        """
-        try:
-            raw_version = importlib_metadata.version("maibot-plugin-sdk")
-            if VersionComparator.is_valid_project_version(raw_version):
-                return raw_version
-        except importlib_metadata.PackageNotFoundError:
-            pass
-
-        sdk_pyproject_path = project_root / "packages" / "maibot-plugin-sdk" / "pyproject.toml"
-        try:
-            with sdk_pyproject_path.open("rb") as pyproject_file:
-                pyproject_data = tomllib.load(pyproject_file)
-        except Exception:
-            return ""
-
-        project_data = pyproject_data.get("project", {})
-        if not isinstance(project_data, dict):
-            return ""
-
-        raw_version = str(project_data.get("version", "") or "").strip()
-        if VersionComparator.is_valid_project_version(raw_version):
-            return raw_version
-        return ""
-
-    @classmethod
-    @lru_cache(maxsize=None)
-    def _load_host_dependency_requirements(cls, project_root: Path) -> Dict[str, Requirement]:
-        """加载主程序 ``pyproject.toml`` 中声明的依赖约束。
-
-        Args:
-            project_root: 项目根目录。
-
-        Returns:
-            Dict[str, Requirement]: 以规范化包名为键的 Requirement 映射。
-        """
-        pyproject_path = project_root / "pyproject.toml"
+    def _load_pyproject_dependency_requirements(cls, pyproject_path: Path) -> Dict[str, Requirement]:
         try:
             with pyproject_path.open("rb") as pyproject_file:
                 pyproject_data = tomllib.load(pyproject_file)
@@ -1206,7 +1233,10 @@ class ManifestValidator:
         raw_dependencies = project_data.get("dependencies", [])
         if not isinstance(raw_dependencies, list):
             return {}
+        return cls._parse_requirement_texts(raw_dependencies)
 
+    @staticmethod
+    def _parse_requirement_texts(raw_dependencies: Iterable[Any]) -> Dict[str, Requirement]:
         requirements: Dict[str, Requirement] = {}
         for raw_dependency in raw_dependencies:
             dependency_text = str(raw_dependency or "").strip()

@@ -6,6 +6,7 @@ import pytest
 
 from src.common.i18n import set_locale
 from src.common.prompt_i18n import clear_prompt_cache, load_prompt, list_prompt_templates
+from src.common.runtime_paths import get_prompts_dir
 from src.prompt.prompt_manager import PromptManager
 
 
@@ -22,6 +23,22 @@ def write_prompt(prompt_dir: Path, locale: str | None, name: str, content: str) 
     base_dir = prompt_dir if locale is None else prompt_dir / locale
     base_dir.mkdir(parents=True, exist_ok=True)
     (base_dir / f"{name}.prompt").write_text(content, encoding="utf-8")
+
+
+def test_get_prompts_dir_falls_back_to_bundle_when_runtime_prompts_are_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """运行期 prompts 目录为空时，应继续使用随包内置模板。"""
+
+    runtime_root = tmp_path / "runtime"
+    bundle_root = tmp_path / "bundle"
+    (runtime_root / "prompts").mkdir(parents=True)
+    write_prompt(bundle_root / "prompts", "zh-CN", "replyer", "你好")
+    monkeypatch.setenv("MAIBOT_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("MAIBOT_BUNDLE_ROOT", str(bundle_root))
+
+    assert get_prompts_dir() == bundle_root / "prompts"
 
 
 def test_load_prompt_prefers_requested_locale(tmp_path: Path) -> None:

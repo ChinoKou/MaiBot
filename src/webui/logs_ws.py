@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from src.common.logger import get_logger
 from src.common.logger_color_and_mapping import MODULE_COLORS
+from src.common.runtime_paths import get_logs_dir
 from src.webui.core import get_token_manager
 from src.webui.routers.websocket.auth import verify_ws_token
 from src.webui.routers.websocket.manager import websocket_manager
@@ -69,7 +70,7 @@ def load_recent_logs(limit: int = 100) -> List[Dict]:
         日志列表
     """
     logs = []
-    log_dir = Path("logs")
+    log_dir = get_logs_dir().resolve()
 
     if not log_dir.exists():
         return logs

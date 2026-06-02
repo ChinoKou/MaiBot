@@ -22,6 +22,7 @@ import time
 from src.common.database.database import engine, get_db_session
 from src.common.database.database_model import Images, ImageType
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir, get_logs_dir, get_runtime_root
 from src.config.config import MMC_VERSION
 from src.webui.dependencies import require_auth
 
@@ -29,12 +30,12 @@ router = APIRouter(prefix="/system", tags=["system"], dependencies=[Depends(requ
 logger = get_logger("webui_system")
 
 _start_time = time.time()
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_DATA_DIR = _PROJECT_ROOT / "data"
+_PROJECT_ROOT = get_runtime_root().resolve()
+_DATA_DIR = get_data_dir().resolve()
 _IMAGE_DIR = _DATA_DIR / "images"
 _EMOJI_DIR = _DATA_DIR / "emoji"
 _EMOJI_THUMBNAIL_DIR = _DATA_DIR / "emoji_thumbnails"
-_LOG_DIR = _PROJECT_ROOT / "logs"
+_LOG_DIR = get_logs_dir().resolve()
 _DATABASE_FILE = _DATA_DIR / "MaiBot.db"
 _DATABASE_AUXILIARY_SUFFIXES = ("-wal", "-shm")
 _RESTART_EXIT_CODE = 42

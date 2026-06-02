@@ -13,13 +13,13 @@ import structlog
 import tomlkit
 
 from .logger_color_and_mapping import MODULE_ALIASES, RESET_COLOR, CONVERTED_MODULE_COLORS as MODULE_COLORS
+from .runtime_paths import get_bot_config_path, get_logs_dir, get_runtime_root
 
 
-# 创建logs目录
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
-logger_file = Path(__file__).resolve()
-PROJECT_ROOT = logger_file.parent.parent.parent.resolve()
+# 创建 logs 目录
+LOG_DIR = get_logs_dir().resolve()
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_ROOT = get_runtime_root().resolve()
 # 全局handler实例，避免重复创建
 _file_handler = None
 _console_handler = None
@@ -306,7 +306,7 @@ def remove_duplicate_handlers():  # sourcery skip: for-append-to-extend, list-co
 # 读取日志配置
 def load_log_config():  # sourcery skip: use-contextlib-suppress
     """从配置文件加载日志设置"""
-    config_path = Path("config/bot_config.toml")
+    config_path = get_bot_config_path()
     default_config = {
         "date_style": "m-d H:i:s",
         "log_level_style": "lite",

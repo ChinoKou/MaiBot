@@ -1,0 +1,104 @@
+name: PyInstaller Binary Distribution
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }} binary
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            os: windows-latest
+            ext: .zip
+          - platform: linux
+            os: ubuntu-latest
+            ext: .tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Setup UV
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: |
+          uv sync --dev
+          uv pip install pip pyinstaller
+
+      - name: Install UPX (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt update
+          sudo apt install -y upx-ucl
+          upx --version
+
+      - name: Install UPX (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          choco install upx -y
+          upx --version
+
+      - name: Build PyInstaller one-dir package
+        run: uv run pyinstaller --noconfirm --clean --distpath dist --workpath build/pyinstaller MaiBot.spec
+
+      - name: Prepare external runtime resources
+        shell: pwsh
+        run: |
+          $AppRoot = Join-Path "dist" "MaiBot"
+          New-Item -ItemType Directory -Force -Path (Join-Path $AppRoot "plugins") | Out-Null
+          if (Test-Path "prompts") {
+              $Destination = Join-Path $AppRoot "prompts"
+              New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+              Get-ChildItem -Force -Path "prompts" | ForEach-Object {
+                  Copy-Item -Path $_.FullName -Destination $Destination -Recurse -Force
+              }
+          }
+
+      - name: Archive Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}_${{ github.ref_name }}${{ matrix.ext }}
+        run: |
+          New-Item -ItemType Directory -Force -Path ".artifacts" | Out-Null
+          $ArtifactPath = Join-Path (Resolve-Path ".artifacts").Path $env:ARTIFACT_NAME
+          Push-Location "dist"
+          try {
+              7z a -tzip -mx=9 $ArtifactPath "MaiBot"
+          }
+          finally {
+              Pop-Location
+          }
+
+      - name: Archive Linux package
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}_${{ github.ref_name }}${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts
+          tar -I 'gzip -9' -cf ".artifacts/${ARTIFACT_NAME}" -C dist MaiBot
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: MaiBot_${{ matrix.platform }}_${{ github.ref_name }}${{ matrix.ext }}
+          path: .artifacts/MaiBot_${{ matrix.platform }}_${{ github.ref_name }}${{ matrix.ext }}
+          if-no-files-found: error

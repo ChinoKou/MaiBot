@@ -23,7 +23,8 @@ import shutil
 import sys
 import time
 
-from src.common.logger import PROJECT_ROOT, get_logger
+from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir, get_runtime_root
 from src.config.config import config_manager
 from src.config.official_configs import PluginRuntimeRenderConfig
 
@@ -539,11 +540,11 @@ class HTMLRenderService:
 
         configured_path = config.browser_install_root.strip()
         if not configured_path:
-            return (PROJECT_ROOT / "data" / "playwright-browsers").resolve()
+            return (get_data_dir().resolve() / "playwright-browsers").resolve()
         candidate_path = Path(configured_path).expanduser()
         if candidate_path.is_absolute():
             return candidate_path.resolve()
-        return (PROJECT_ROOT / candidate_path).resolve()
+        return (get_runtime_root().resolve() / candidate_path).resolve()
 
     def _get_browser_state_path(self) -> Path:
         """获取托管浏览器状态文件路径。
@@ -552,7 +553,7 @@ class HTMLRenderService:
             Path: 浏览器状态文件路径。
         """
 
-        return (PROJECT_ROOT / "data" / "plugin_runtime" / "html_render_browser_state.json").resolve()
+        return (get_data_dir().resolve() / "plugin_runtime" / "html_render_browser_state.json").resolve()
 
     def _load_managed_browser_record(self) -> Optional[ManagedBrowserRecord]:
         """读取最近一次成功使用的托管浏览器记录。

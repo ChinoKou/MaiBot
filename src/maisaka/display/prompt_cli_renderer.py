@@ -26,12 +26,15 @@ from .display_utils import (
     get_role_badge_label as get_shared_role_badge_label,
     get_role_badge_style as get_shared_role_badge_style,
 )
-from .preview_path_utils import build_display_path, build_file_uri, REPO_ROOT
+from src.common.runtime_paths import get_data_dir
+
+from .preview_path_utils import build_display_path, build_file_uri
 from .prompt_preview_logger import PromptPreviewLogger
 
-DATA_IMAGE_DIR = REPO_ROOT / "data" / "images"
-DATA_EMOJI_DIR = REPO_ROOT / "data" / "emoji"
-DATA_HTML_IMAGE_DIR = REPO_ROOT / "data" / "html_imgs"
+_DATA_DIR = get_data_dir().resolve()
+DATA_IMAGE_DIR = _DATA_DIR / "images"
+DATA_EMOJI_DIR = _DATA_DIR / "emoji"
+DATA_HTML_IMAGE_DIR = _DATA_DIR / "html_imgs"
 
 
 def _build_prompt_preview_web_uri(file_path: Path) -> str:

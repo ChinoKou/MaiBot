@@ -13,6 +13,8 @@ from src.webui.routers.plugin import support as support_module
 
 @pytest.fixture
 def client(tmp_path, monkeypatch) -> TestClient:
+    monkeypatch.setenv("MAIBOT_RUNTIME_ROOT", str(tmp_path / "runtime-root"))
+
     plugins_dir = tmp_path / "plugins"
     plugins_dir.mkdir(parents=True, exist_ok=True)
 
@@ -66,6 +68,34 @@ def test_resolve_installed_plugin_path_accepts_manifest_id_case_mismatch(client:
 
     assert plugin_path is not None
     assert plugin_path.name == "demo_plugin"
+
+
+def test_get_plugin_config_path_uses_manifest_id_for_case_mismatch(client: TestClient):
+    plugin_path = support_module.resolve_installed_plugin_path("Test.Demo")
+    assert plugin_path is not None
+
+    config_path = support_module.get_plugin_config_path("Test.Demo", plugin_path)
+
+    assert config_path.parent.name == "test.demo"
+    assert not any(path.name == "Test.Demo" for path in config_path.parent.parent.iterdir())
+
+
+def test_get_plugin_config_path_does_not_remigrate_after_external_config_delete(client: TestClient):
+    plugin_path = support_module.resolve_installed_plugin_path("test.demo")
+    assert plugin_path is not None
+    legacy_config_path = plugin_path / "config.toml"
+    legacy_config_path.write_text("[plugin]\nenabled = true\n", encoding="utf-8")
+
+    config_path = support_module.get_plugin_config_path("test.demo", plugin_path)
+    assert config_path.read_text(encoding="utf-8") == "[plugin]\nenabled = true\n"
+
+    marker_path = config_path.parent / support_module.PLUGIN_STATE_MIGRATION_MARKER_NAME
+    config_path.unlink()
+    legacy_config_path.write_text("[plugin]\nenabled = false\n", encoding="utf-8")
+
+    assert support_module.get_plugin_config_path("test.demo", plugin_path) == config_path
+    assert marker_path.exists()
+    assert not config_path.exists()
 
 
 def test_get_plugin_icon_serves_manifest_declared_local_icon(client: TestClient):
@@ -229,12 +259,13 @@ def test_uninstall_plugin_releases_runtime_before_delete(client: TestClient, mon
 
     plugin_path = support_module.resolve_installed_plugin_path("test.demo")
     assert plugin_path is not None
+    config_path = support_module.get_plugin_config_path("test.demo", plugin_path)
     reload_calls = []
 
     class FakeRuntimeManager:
         async def reload_plugins_globally(self, plugin_ids, reason="manual"):
             reload_calls.append((list(plugin_ids), reason))
-            config_text = (plugin_path / "config.toml").read_text(encoding="utf-8")
+            config_text = config_path.read_text(encoding="utf-8")
             assert "enabled = false" in config_text
             return True
 
@@ -245,15 +276,43 @@ def test_uninstall_plugin_releases_runtime_before_delete(client: TestClient, mon
     assert response.status_code == 200
     assert reload_calls == [(["test.demo"], "uninstall")]
     assert not plugin_path.exists()
+    assert not config_path.exists()
 
 
-def test_update_non_git_plugin_reinstalls_and_preserves_known_user_files(client: TestClient, monkeypatch):
+def test_uninstall_plugin_deletes_manifest_id_state_on_case_mismatch(client: TestClient, monkeypatch):
+    from src.plugin_runtime import integration as integration_module
+
+    plugin_path = support_module.resolve_installed_plugin_path("Test.Demo")
+    assert plugin_path is not None
+    config_path = support_module.get_plugin_config_path("Test.Demo", plugin_path)
+    config_path.write_text("[plugin]\nenabled = true\n", encoding="utf-8")
+    requested_case_state_path = config_path.parent.parent / "Test.Demo"
+    reload_calls = []
+
+    class FakeRuntimeManager:
+        async def reload_plugins_globally(self, plugin_ids, reason="manual"):
+            reload_calls.append((list(plugin_ids), reason))
+            return True
+
+    monkeypatch.setattr(integration_module, "get_plugin_runtime_manager", lambda: FakeRuntimeManager())
+
+    response = client.post("/api/webui/plugins/uninstall", json={"plugin_id": "Test.Demo"})
+
+    assert response.status_code == 200
+    assert reload_calls == [(["test.demo"], "uninstall")]
+    assert not plugin_path.exists()
+    assert not config_path.parent.exists()
+    assert not any(path.name == requested_case_state_path.name for path in requested_case_state_path.parent.iterdir())
+
+
+def test_update_non_git_plugin_reinstalls_without_mixing_external_state(client: TestClient, monkeypatch):
     plugin_path = support_module.resolve_installed_plugin_path("test.demo")
     assert plugin_path is not None
     (plugin_path / "plugin.py").write_text("old source", encoding="utf-8")
-    (plugin_path / "config.toml").write_text("[plugin]\nenabled = false\n", encoding="utf-8")
     (plugin_path / "custom.json").write_text('{"user": true}', encoding="utf-8")
-    config_backup_dir = plugin_path / "config_back"
+    config_path = support_module.get_plugin_config_path("test.demo", plugin_path)
+    config_path.write_text("[plugin]\nenabled = false\n", encoding="utf-8")
+    config_backup_dir = config_path.parent / "config_back"
     config_backup_dir.mkdir()
     (config_backup_dir / "config.toml.backup").write_text("[plugin]\nenabled = true\n", encoding="utf-8")
 
@@ -297,8 +356,10 @@ def test_update_non_git_plugin_reinstalls_and_preserves_known_user_files(client:
     assert (backup_path / "custom.json").read_text(encoding="utf-8") == '{"user": true}'
     assert (plugin_path / ".git").is_dir()
     assert (plugin_path / "plugin.py").read_text(encoding="utf-8") == "new source"
-    assert (plugin_path / "config.toml").read_text(encoding="utf-8") == "[plugin]\nenabled = false\n"
-    assert (plugin_path / "config_back" / "config.toml.backup").exists()
+    assert (plugin_path / "config.toml").read_text(encoding="utf-8") == "[plugin]\nenabled = true\n"
+    assert config_path.read_text(encoding="utf-8") == "[plugin]\nenabled = false\n"
+    assert (config_backup_dir / "config.toml.backup").exists()
+    assert not (plugin_path / "config_back").exists()
     assert not (plugin_path / "custom.json").exists()
     manifest = json.loads((plugin_path / "_manifest.json").read_text(encoding="utf-8"))
     assert manifest["version"] == "1.1.0"

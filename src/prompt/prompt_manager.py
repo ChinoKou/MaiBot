@@ -9,6 +9,7 @@ from src.common.i18n import get_locale
 from src.common.i18n.loaders import DEFAULT_LOCALE, normalize_locale
 from src.common.logger import get_logger
 from src.common.prompt_i18n import list_prompt_templates
+from src.common.runtime_paths import get_custom_prompts_dir, get_data_dir, get_prompts_dir, get_runtime_root
 
 
 logger = get_logger("Prompt")
@@ -16,11 +17,10 @@ logger = get_logger("Prompt")
 _LEFT_BRACE = chr(0xFDE9)
 _RIGHT_BRACE = chr(0xFDEA)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROMPTS_DIR = PROJECT_ROOT / "prompts"
-DATA_DIR = PROJECT_ROOT / "data"
-CUSTOM_PROMPTS_DIR = DATA_DIR / "custom_prompts"
-PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_ROOT = get_runtime_root().resolve()
+PROMPTS_DIR = get_prompts_dir().resolve()
+DATA_DIR = get_data_dir().resolve()
+CUSTOM_PROMPTS_DIR = get_custom_prompts_dir().resolve()
 CUSTOM_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
 SUFFIX_PROMPT = ".prompt"
 

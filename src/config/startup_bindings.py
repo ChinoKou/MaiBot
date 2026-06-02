@@ -5,10 +5,12 @@ import sys
 
 import tomlkit
 
+from src.common.runtime_paths import get_bot_config_path, get_config_dir, get_runtime_root
 
-PROJECT_ROOT: Path = Path(__file__).parent.parent.parent.absolute().resolve()
-CONFIG_DIR: Path = PROJECT_ROOT / "config"
-BOT_CONFIG_PATH: Path = (CONFIG_DIR / "bot_config.toml").resolve().absolute()
+
+PROJECT_ROOT: Path = get_runtime_root()
+CONFIG_DIR: Path = get_config_dir().resolve()
+BOT_CONFIG_PATH: Path = get_bot_config_path().resolve()
 
 
 @dataclass(frozen=True)

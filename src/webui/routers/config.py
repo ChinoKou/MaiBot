@@ -17,7 +17,16 @@ import tomlkit
 
 from src.common.logger import get_logger
 from src.common.prompt_i18n import clear_prompt_cache, list_prompt_templates
-from src.config.config import CONFIG_DIR, Config, ModelConfig, PROJECT_ROOT, config_manager
+from src.common.runtime_paths import (
+    get_bot_config_path,
+    get_custom_prompts_dir,
+    get_data_dir,
+    get_logs_dir,
+    get_model_config_path,
+    get_prompts_dir,
+    get_runtime_root,
+)
+from src.config.config import Config, ModelConfig, config_manager
 from src.config.config_base import AttributeData, ConfigBase
 from src.config.model_configs import (
     APIProvider,
@@ -60,9 +69,11 @@ PromptContentBody = Annotated[str, Body(embed=True)]
 
 router = APIRouter(prefix="/config", tags=["config"], dependencies=[Depends(require_auth)])
 
-PROMPTS_DIR = PROJECT_ROOT / "prompts"
-CUSTOM_PROMPTS_DIR = PROJECT_ROOT / "data" / "custom_prompts"
-MAISAKA_PROMPT_PREVIEW_DIR = (PROJECT_ROOT / "logs" / "maisaka_prompt").resolve()
+PROJECT_ROOT = get_runtime_root().resolve()
+PROMPTS_DIR = get_prompts_dir().resolve()
+CUSTOM_PROMPTS_DIR = get_custom_prompts_dir().resolve()
+MAISAKA_PROMPT_PREVIEW_DIR = (get_logs_dir().resolve() / "maisaka_prompt").resolve()
+WEBUI_DATA_PATH = get_data_dir().resolve() / "webui.json"
 _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
@@ -760,7 +771,7 @@ def _apply_prompt_generator_config_blocks(blocks: List[PromptGeneratorConfigBloc
     if not blocks:
         raise HTTPException(status_code=400, detail="请选择要注入的配置块")
 
-    config_path = os.path.join(CONFIG_DIR, "bot_config.toml")
+    config_path = get_bot_config_path()
     if not os.path.exists(config_path):
         raise HTTPException(status_code=404, detail="配置文件不存在")
 
@@ -1084,7 +1095,7 @@ async def get_config_section_schema(section_name: str):
 async def get_bot_config():
     """获取麦麦主程序配置"""
     try:
-        config_path = os.path.join(CONFIG_DIR, "bot_config.toml")
+        config_path = get_bot_config_path()
         if not os.path.exists(config_path):
             raise HTTPException(status_code=404, detail="配置文件不存在")
 
@@ -1103,7 +1114,7 @@ async def get_bot_config():
 async def get_model_config():
     """获取模型配置（包含提供商和模型任务配置）"""
     try:
-        config_path = os.path.join(CONFIG_DIR, "model_config.toml")
+        config_path = get_model_config_path()
         if not os.path.exists(config_path):
             raise HTTPException(status_code=404, detail="配置文件不存在")
 
@@ -1134,7 +1145,7 @@ async def update_bot_config(config_data: ConfigBody):
             raise HTTPException(status_code=400, detail=f"配置数据验证失败: {str(e)}") from e
 
         # 保存配置文件（自动保留注释和格式）
-        config_path = os.path.join(CONFIG_DIR, "bot_config.toml")
+        config_path = get_bot_config_path()
         save_toml_with_format(config_data, config_path)
 
         logger.info("麦麦主程序配置已更新")
@@ -1159,7 +1170,7 @@ async def update_model_config(config_data: ConfigBody):
             raise HTTPException(status_code=400, detail=f"配置数据验证失败: {str(e)}") from e
 
         # 保存配置文件（自动保留注释和格式）
-        config_path = os.path.join(CONFIG_DIR, "model_config.toml")
+        config_path = get_model_config_path()
         save_toml_with_format(config_data, config_path)
 
         logger.info("模型配置已更新")
@@ -1179,7 +1190,7 @@ async def update_bot_config_section(section_name: str, section_data: SectionBody
     """更新麦麦主程序配置的指定节（保留注释和格式）"""
     try:
         # 读取现有配置
-        config_path = os.path.join(CONFIG_DIR, "bot_config.toml")
+        config_path = get_bot_config_path()
         if not os.path.exists(config_path):
             raise HTTPException(status_code=404, detail="配置文件不存在")
 
@@ -1230,7 +1241,7 @@ async def update_bot_config_section(section_name: str, section_data: SectionBody
 async def get_bot_config_raw():
     """获取麦麦主程序配置的原始 TOML 内容"""
     try:
-        config_path = os.path.join(CONFIG_DIR, "bot_config.toml")
+        config_path = get_bot_config_path()
         if not os.path.exists(config_path):
             raise HTTPException(status_code=404, detail="配置文件不存在")
 
@@ -1262,7 +1273,7 @@ async def update_bot_config_raw(raw_content: RawContentBody):
             raise HTTPException(status_code=400, detail=f"配置数据验证失败: {str(e)}") from e
 
         # 保存配置文件
-        config_path = os.path.join(CONFIG_DIR, "bot_config.toml")
+        config_path = get_bot_config_path()
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(raw_content)
 
@@ -1280,7 +1291,7 @@ async def update_model_config_section(section_name: str, section_data: SectionBo
     """更新模型配置的指定节（保留注释和格式）"""
     try:
         # 读取现有配置
-        config_path = os.path.join(CONFIG_DIR, "model_config.toml")
+        config_path = get_model_config_path()
         if not os.path.exists(config_path):
             raise HTTPException(status_code=404, detail="配置文件不存在")
 
@@ -1405,7 +1416,7 @@ async def get_adapter_config_path():
     """获取保存的适配器配置文件路径"""
     try:
         # 从 data/webui.json 读取路径偏好
-        webui_data_path = os.path.join("data", "webui.json")
+        webui_data_path = WEBUI_DATA_PATH
         if not os.path.exists(webui_data_path):
             return {"success": True, "path": None}
 
@@ -1451,7 +1462,7 @@ async def save_adapter_config_path(data: PathBody):
             raise HTTPException(status_code=400, detail="路径不能为空")
 
         # 保存到 data/webui.json
-        webui_data_path = os.path.join("data", "webui.json")
+        webui_data_path = WEBUI_DATA_PATH
         import json
 
         # 读取现有数据
@@ -1470,7 +1481,7 @@ async def save_adapter_config_path(data: PathBody):
         webui_data["adapter_config_path"] = save_path
 
         # 保存
-        os.makedirs("data", exist_ok=True)
+        webui_data_path.parent.mkdir(parents=True, exist_ok=True)
         with open(webui_data_path, "w", encoding="utf-8") as f:
             json.dump(webui_data, f, ensure_ascii=False, indent=2)
 

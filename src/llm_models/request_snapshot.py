@@ -8,16 +8,16 @@ import json
 import re
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_bundle_path, get_logs_dir
 from src.config.model_configs import APIProvider, ModelInfo
 from src.llm_models.model_client.base_client import AudioTranscriptionRequest, EmbeddingRequest, ResponseRequest
 from src.llm_models.payload_content.message import ImageMessagePart, Message, MessageBuilder, RoleType, TextMessagePart
 from src.llm_models.payload_content.resp_format import RespFormat, RespFormatType
 from src.llm_models.payload_content.tool_option import ToolCall, ToolOption, normalize_tool_options
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LLM_REQUEST_LOG_DIR = PROJECT_ROOT / "logs" / "llm_request"
+LLM_REQUEST_LOG_DIR = get_logs_dir().resolve() / "llm_request"
 REPLAY_SCRIPT_RELATIVE_PATH = Path("scripts") / "replay_llm_request.py"
-REPLAY_SCRIPT_PATH = PROJECT_ROOT / REPLAY_SCRIPT_RELATIVE_PATH
+REPLAY_SCRIPT_PATH = get_bundle_path(*REPLAY_SCRIPT_RELATIVE_PATH.parts).resolve()
 FILENAME_SAFE_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SNAPSHOT_VERSION = 1
 DEFAULT_LLM_REQUEST_SNAPSHOT_LIMIT = 128

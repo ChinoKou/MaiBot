@@ -6,6 +6,7 @@ from typing import Any, List, Optional, Tuple
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from src.common.runtime_paths import get_data_dir
 from src.config.config import global_config
 from src.webui.dependencies import require_auth
 
@@ -19,11 +20,7 @@ _paragraph_store_cache: Any = None
 
 def _get_embedding_dir() -> str:
     """获取 embedding 数据目录。"""
-    import os
-
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    root_path = os.path.abspath(os.path.join(current_dir, "..", ".."))
-    return os.path.join(root_path, "data/embedding")
+    return str(get_data_dir().resolve() / "embedding")
 
 
 def _get_paragraph_store():

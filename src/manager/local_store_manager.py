@@ -6,8 +6,9 @@ import os
 import tempfile
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 
-LOCAL_STORE_FILE_PATH = "data/local_store.json"
+LOCAL_STORE_FILE_PATH = get_data_dir().resolve() / "local_store.json"
 LocalStoreValue: TypeAlias = str | list | dict | int | float | bool
 
 logger = get_logger("local_storage")
@@ -16,13 +17,13 @@ logger = get_logger("local_storage")
 class LocalStoreManager:
     """管理本地 JSON 存储文件的加载、保存和损坏恢复。"""
 
-    file_path: str
+    file_path: str | Path
     """本地存储路径"""
 
     store: dict[str, LocalStoreValue]
     """本地存储数据"""
 
-    def __init__(self, local_store_path: str | None = None):
+    def __init__(self, local_store_path: str | Path | None = None):
         """初始化本地存储路径并加载已有数据。"""
         self.file_path = local_store_path or LOCAL_STORE_FILE_PATH
         self.store = {}
@@ -123,4 +124,4 @@ class LocalStoreManager:
             index += 1
 
 
-local_storage = LocalStoreManager("data/local_store.json")  # 全局单例化
+local_storage = LocalStoreManager()  # 全局单例化

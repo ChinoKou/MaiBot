@@ -18,6 +18,7 @@ from src.chat.message_receive.chat_manager import chat_manager as _chat_manager
 from src.common.database.database import get_db_session
 from src.common.database.database_model import ChatSession, Expression, Messages, ModifiedBy
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 from src.common.utils.utils_config import ChatConfigUtils, ExpressionConfigUtils
 from src.config.config import global_config
 from src.learners.expression_review_store import (
@@ -32,7 +33,7 @@ EXCLUDE_IDS_QUERY = Query(None, description="需要排除的表达方式 ID")
 
 # 创建路由器
 router = APIRouter(prefix="/expression", tags=["Expression"], dependencies=[Depends(require_auth)])
-LEGACY_IMPORT_UPLOAD_DIR = Path("data/webui_legacy_expression_imports")
+LEGACY_IMPORT_UPLOAD_DIR = get_data_dir().resolve() / "webui_legacy_expression_imports"
 
 
 def get_configured_platform_accounts() -> set[tuple[str, str]]:

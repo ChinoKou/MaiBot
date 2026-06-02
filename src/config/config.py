@@ -42,6 +42,7 @@ from .official_configs import (
 )
 from src.common.i18n import t
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_bot_config_path, get_config_dir, get_model_config_path, get_runtime_root
 
 """
 如果你想要修改配置文件，请递增version的值
@@ -52,12 +53,12 @@ from src.common.logger import get_logger
     修订号：配置文件内容小更新
 """
 
-PROJECT_ROOT: Path = Path(__file__).parent.parent.parent.absolute().resolve()
-CONFIG_DIR: Path = PROJECT_ROOT / "config"
-BOT_CONFIG_PATH: Path = (CONFIG_DIR / "bot_config.toml").resolve().absolute()
-MODEL_CONFIG_PATH: Path = (CONFIG_DIR / "model_config.toml").resolve().absolute()
-LEGACY_ENV_PATH: Path = (PROJECT_ROOT / ".env").resolve().absolute()
-A_MEMORIX_LEGACY_CONFIG_PATH: Path = (CONFIG_DIR / "a_memorix.toml").resolve().absolute()
+PROJECT_ROOT: Path = get_runtime_root()
+CONFIG_DIR: Path = get_config_dir().resolve()
+BOT_CONFIG_PATH: Path = get_bot_config_path().resolve()
+MODEL_CONFIG_PATH: Path = get_model_config_path().resolve()
+LEGACY_ENV_PATH: Path = (PROJECT_ROOT / ".env").resolve()
+A_MEMORIX_LEGACY_CONFIG_PATH: Path = (CONFIG_DIR / "a_memorix.toml").resolve()
 MMC_VERSION: str = "1.0.0-rc.3"
 CONFIG_VERSION: str = "8.12.25"
 MODEL_CONFIG_VERSION: str = "1.17.3"

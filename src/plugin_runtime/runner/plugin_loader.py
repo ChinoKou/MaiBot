@@ -18,6 +18,7 @@ import re
 import sys
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_plugin_dependency_dir
 from src.plugin_runtime.runner.manifest_validator import ManifestValidator, PluginManifest, is_reserved_plugin_directory
 
 logger = get_logger("plugin_runtime.runner.plugin_loader")
@@ -262,6 +263,10 @@ class PluginLoader:
         """
         removed_modules: List[str] = []
         plugin_path = Path(plugin_dir).resolve()
+        plugin_dependency_path = get_plugin_dependency_dir(plugin_id).resolve()
+        purge_roots = [plugin_path]
+        if plugin_dependency_path.is_dir():
+            purge_roots.append(plugin_dependency_path)
         synthetic_module_name = self._build_safe_module_name(plugin_id)
 
         for module_name, module in list(sys.modules.items()):
@@ -279,7 +284,7 @@ class PluginLoader:
             except Exception:
                 continue
 
-            if module_path.is_relative_to(plugin_path):
+            if any(module_path.is_relative_to(root_path) for root_path in purge_roots):
                 removed_modules.append(module_name)
                 sys.modules.pop(module_name, None)
 
@@ -472,39 +477,41 @@ class PluginLoader:
         sys.modules[module_name] = module
 
         plugin_parent_dir = plugin_dir.parent
+        plugin_dependency_dir = get_plugin_dependency_dir(plugin_id).resolve()
         src_root = Path("src").resolve()
         try:
             with self._temporary_sys_path_entry(src_root):
                 with self._temporary_sys_path_entry(plugin_parent_dir):
-                    spec.loader.exec_module(module)
+                    with self._temporary_sys_path_entry(plugin_dependency_dir, require_existing=True):
+                        spec.loader.exec_module(module)
 
-                    # 优先使用新版 create_plugin 工厂函数
-                    create_plugin = getattr(module, "create_plugin", None)
-                    if create_plugin is not None:
-                        instance = create_plugin()
-                        self._validate_sdk_plugin_contract(plugin_id, instance)
-                        logger.info(f"插件 {plugin_id} v{manifest.version} 加载成功")
-                        return PluginMeta(
-                            plugin_id=plugin_id,
-                            plugin_dir=str(plugin_dir),
-                            module_name=module_name,
-                            plugin_instance=instance,
-                            manifest=manifest,
-                        )
+                        # 优先使用新版 create_plugin 工厂函数
+                        create_plugin = getattr(module, "create_plugin", None)
+                        if create_plugin is not None:
+                            instance = create_plugin()
+                            self._validate_sdk_plugin_contract(plugin_id, instance)
+                            logger.info(f"插件 {plugin_id} v{manifest.version} 加载成功")
+                            return PluginMeta(
+                                plugin_id=plugin_id,
+                                plugin_dir=str(plugin_dir),
+                                module_name=module_name,
+                                plugin_instance=instance,
+                                manifest=manifest,
+                            )
 
-                    # 回退：检测旧版 @register_plugin 标记的 BasePlugin 子类
-                    instance = self._try_load_legacy_plugin(module, plugin_id)
-                    if instance is not None:
-                        logger.info(
-                            f"插件 {plugin_id} v{manifest.version} 通过旧版兼容层加载成功（请尽快迁移到 maibot_sdk）"
-                        )
-                        return PluginMeta(
-                            plugin_id=plugin_id,
-                            plugin_dir=str(plugin_dir),
-                            module_name=module_name,
-                            plugin_instance=instance,
-                            manifest=manifest,
-                        )
+                        # 回退：检测旧版 @register_plugin 标记的 BasePlugin 子类
+                        instance = self._try_load_legacy_plugin(module, plugin_id)
+                        if instance is not None:
+                            logger.info(
+                                f"插件 {plugin_id} v{manifest.version} 通过旧版兼容层加载成功（请尽快迁移到 maibot_sdk）"
+                            )
+                            return PluginMeta(
+                                plugin_id=plugin_id,
+                                plugin_dir=str(plugin_dir),
+                                module_name=module_name,
+                                plugin_instance=instance,
+                                manifest=manifest,
+                            )
         except Exception:
             sys.modules.pop(module_name, None)
             raise
@@ -543,8 +550,12 @@ class PluginLoader:
 
     @staticmethod
     @contextlib.contextmanager
-    def _temporary_sys_path_entry(path: Path) -> Iterator[None]:
+    def _temporary_sys_path_entry(path: Path, *, require_existing: bool = False) -> Iterator[None]:
         """临时将路径放入 sys.path 头部，并在离开作用域后恢复。"""
+        if require_existing and not path.is_dir():
+            yield
+            return
+
         normalized_path = os.path.normpath(str(path))
         existing_paths = {os.path.normpath(entry) for entry in sys.path}
         inserted = normalized_path not in existing_paths

@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 
 from src.common.i18n import t
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_dashboard_dist_dir, get_runtime_root
 from src.webui.dependencies import require_auth
 
 logger = get_logger("webui.app")
@@ -38,7 +39,7 @@ def _resolve_safe_static_file_path(static_path: Path, full_path: str) -> Path | 
 
 
 def _get_project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return get_runtime_root().resolve()
 
 
 def _resolve_statistics_report_path() -> Path:
@@ -237,9 +238,9 @@ def _setup_static_files(app: FastAPI):
 
 def _resolve_static_path() -> Path | None:
     if _is_local_dashboard_enabled():
-        static_path = _get_project_root() / "dashboard" / "dist"
-        if static_path.is_dir() and (static_path / "index.html").exists():
-            return static_path
+        bundled_static_path = get_dashboard_dist_dir().resolve()
+        if bundled_static_path.is_dir() and (bundled_static_path / "index.html").exists():
+            return bundled_static_path
 
     try:
         module = import_module("maibot_dashboard")

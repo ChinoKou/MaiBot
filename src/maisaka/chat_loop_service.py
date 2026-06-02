@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
 import asyncio
@@ -14,6 +13,7 @@ from src.common.data_models.llm_service_data_models import LLMGenerationOptions
 from src.common.i18n import get_locale
 from src.common.logger import get_logger
 from src.common.prompt_i18n import load_prompt
+from src.common.runtime_paths import get_logs_dir
 from src.common.utils.utils_config import ChatConfigUtils
 from src.config.config import global_config
 from src.core.tooling import ToolAvailabilityContext, ToolRegistry
@@ -63,7 +63,7 @@ PROMPT_PREVIEW_CATEGORY_BY_REQUEST_KIND = {
     "sub_agent": "sub_agent",
 }
 CONTEXT_SELECTION_CACHE_STABILITY_RATIO = 2.0
-DEBUG_PLANNER_CACHE_DIR = Path("logs/debug_planner_cache")
+DEBUG_PLANNER_CACHE_DIR = get_logs_dir().resolve() / "debug_planner_cache"
 
 
 @dataclass(slots=True)

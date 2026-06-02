@@ -28,6 +28,7 @@ from src.common.data_models.message_component_data_model import (
     VoiceComponent,
 )
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 from src.config.config import global_config
 
 from .math_utils import number_to_short_id, TimestampMode, translate_timestamp_to_human_readable
@@ -280,7 +281,7 @@ class MessageUtils:
             session.add(existing_record)
             return
 
-        image_dir = Path(__file__).parent.parent.parent.parent / "data" / "images"
+        image_dir = get_data_dir().resolve() / "images"
         image_dir.mkdir(parents=True, exist_ok=True)
         image_format = MessageUtils._detect_image_format(component.binary_data)
         image_path = image_dir / f"{image_hash}.{image_format}"

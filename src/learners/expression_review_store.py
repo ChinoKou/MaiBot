@@ -1,16 +1,16 @@
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import json
 import uuid
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_logs_dir
 from src.manager.local_store_manager import local_storage
 
 logger = get_logger("expressor")
 
-REVIEW_LOG_PATH = Path("logs/expression_review/review_logs.json")
+REVIEW_LOG_PATH = get_logs_dir().resolve() / "expression_review" / "review_logs.json"
 AI_REVIEW_EVENT = "ai_review"
 MANUAL_RESCUE_EVENT = "manual_rescue"
 

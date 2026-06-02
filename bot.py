@@ -3,6 +3,7 @@ from pathlib import Path
 from rich.traceback import install
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import platform
@@ -11,21 +12,32 @@ import subprocess
 import sys
 import time
 import traceback
+import zipfile
 
 from src.common.i18n import set_locale, t, tn
 from src.common.logger import get_logger, initialize_logging, shutdown_logging
+from src.common.process_launcher import (
+    PLUGIN_PIP_INSTALL_PROCESS_ARG,
+    PLUGIN_RUNNER_PROCESS_ARG,
+    WORKER_PROCESS_ARG,
+    build_self_launch_command,
+    strip_internal_process_args,
+)
 from src.common.runtime_loop import set_main_loop
+from src.common.runtime_paths import get_bundle_path, get_runtime_path, get_runtime_root
 from src.config.legacy_upgrade_confirmation import require_legacy_upgrade_confirmation
 
-# 设置工作目录为脚本所在目录
-script_dir = os.path.dirname(os.path.abspath(__file__))
-os.chdir(script_dir)
+RUNTIME_ROOT = get_runtime_root().resolve()
+os.chdir(RUNTIME_ROOT)
 set_locale(os.getenv("MAIBOT_LOCALE", "zh-CN"))
 
 # 检查是否是 Worker 进程，只在 Worker 进程中输出详细的初始化信息
 # Runner 进程只需要基本的日志功能，不需要详细的初始化日志
-is_worker = os.environ.get("MAIBOT_WORKER_PROCESS") == "1"
-initialize_logging(verbose=is_worker)
+is_worker = os.environ.get("MAIBOT_WORKER_PROCESS") == "1" or WORKER_PROCESS_ARG in sys.argv[1:]
+is_plugin_runner = PLUGIN_RUNNER_PROCESS_ARG in sys.argv[1:]
+is_plugin_pip_install = PLUGIN_PIP_INSTALL_PROCESS_ARG in sys.argv[1:]
+sys.argv = [sys.argv[0], *strip_internal_process_args(sys.argv[1:])]
+initialize_logging(verbose=is_worker and not is_plugin_pip_install)
 install(extra_lines=3)
 logger = get_logger("main")
 
@@ -44,25 +56,87 @@ def _print_interrupt_exit_notice() -> None:
     print("\n收到 Ctrl+C，中断退出。")
 
 
+def _iter_bundled_pip_wheels() -> list[Path]:
+    """查找 PyInstaller 包内随 ensurepip 携带的 pip wheel。"""
+
+    candidate_roots: list[Path] = []
+    meipass_root = getattr(sys, "_MEIPASS", "")
+    if meipass_root:
+        candidate_roots.append(Path(str(meipass_root)).resolve())
+    candidate_roots.append(get_bundle_path().resolve())
+
+    pip_wheels: list[Path] = []
+    for root in candidate_roots:
+        bundled_dir = root / "ensurepip" / "_bundled"
+        pip_wheels.extend(sorted(bundled_dir.glob("pip-*.whl"), reverse=True))
+    return pip_wheels
+
+
+def _prepare_filesystem_pip_path(pip_wheel: Path) -> Path:
+    """将 pip wheel 解压到外置运行目录，避免 frozen loader 影响 distlib 资源读取。"""
+
+    target_dir = get_runtime_path("runtime", "pip", pip_wheel.stem).resolve()
+    marker_path = target_dir / ".maibot_pip_wheel"
+    marker_text = pip_wheel.name
+    if marker_path.is_file() and marker_path.read_text(encoding="utf-8") == marker_text:
+        return target_dir
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(pip_wheel) as wheel_zip:
+        wheel_zip.extractall(target_dir)
+    marker_path.write_text(marker_text, encoding="utf-8")
+    return target_dir
+
+
+def _load_bundled_pip_main():
+    """加载 PyInstaller 包内的 pip 入口。"""
+
+    for pip_wheel in _iter_bundled_pip_wheels():
+        pip_path = _prepare_filesystem_pip_path(pip_wheel)
+        sys.path.insert(0, str(pip_path))
+        try:
+            from pip._internal.cli.main import main as pip_main
+
+            return pip_main
+        except ModuleNotFoundError as exc:
+            if exc.name != "pip":
+                raise
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(pip_path))
+
+    try:
+        from pip._internal.cli.main import main as pip_main
+
+        return pip_main
+    except ModuleNotFoundError as exc:
+        if exc.name != "pip":
+            raise
+
+    raise ModuleNotFoundError("No module named 'pip'")
+
+
+def run_plugin_pip_install_process(args: list[str]) -> None:
+    """使用当前 frozen 运行时执行 pip 安装命令。"""
+
+    pip_main = _load_bundled_pip_main()
+    sys.exit(pip_main(["install", *args]))
+
+
 def run_runner_process():
     """
     Runner 进程逻辑：作为守护进程运行，负责启动和监控 Worker 进程。
     处理重启请求 (退出码 42) 和 Ctrl+C 信号。
     """
-    script_file = sys.argv[0]
-    python_executable = sys.executable
+    passthrough_args = strip_internal_process_args(sys.argv[1:])
 
     # 设置环境变量，标记子进程为 Worker 进程
     env = os.environ.copy()
     env["MAIBOT_WORKER_PROCESS"] = "1"
 
     while True:
-        logger.info(t("startup.launching_script", script_file=script_file))
+        cmd = build_self_launch_command(WORKER_PROCESS_ARG, passthrough_args)
+        logger.info(t("startup.launching_script", script_file=" ".join(cmd)))
         logger.info(t("startup.compiling_shaders"))
-
-        # 启动子进程 (Worker)
-        # 使用 sys.executable 确保使用相同的 Python 解释器
-        cmd = [python_executable, script_file] + sys.argv[1:]
 
         process = subprocess.Popen(cmd, env=env)
 
@@ -92,12 +166,20 @@ def run_runner_process():
             sys.exit(0)
 
 
+if is_plugin_pip_install:
+    run_plugin_pip_install_process(sys.argv[1:])
+
+if is_plugin_runner:
+    from src.plugin_runtime.runner.runner_main import main as plugin_runner_main
+
+    plugin_runner_main()
+    sys.exit(0)
+
 # 检查是否是 Worker 进程
-# 如果没有设置 MAIBOT_WORKER_PROCESS 环境变量，说明是直接运行的脚本，
-# 此时应该作为 Runner 运行。
-if os.environ.get("MAIBOT_WORKER_PROCESS") != "1":
+# 如果没有设置 Worker 标记，说明是直接运行的脚本，此时应该作为 Runner 运行。
+if not is_worker:
     if __name__ == "__main__":
-        require_legacy_upgrade_confirmation(Path(script_dir))
+        require_legacy_upgrade_confirmation(RUNTIME_ROOT)
         run_runner_process()
     # 如果作为模块导入，不执行 Runner 逻辑，但也不应该执行下面的 Worker 逻辑
     sys.exit(0)
@@ -110,9 +192,9 @@ if os.environ.get("MAIBOT_WORKER_PROCESS") != "1":
 # 这是正常的，但为了避免重复的初始化日志，我们在 initialize_logging() 中添加了防重复机制
 # 不过由于是不同进程，每个进程仍会初始化一次，这是预期的行为
 
-require_legacy_upgrade_confirmation(Path(script_dir))
+require_legacy_upgrade_confirmation(RUNTIME_ROOT)
 
-logger.info(t("startup.worker_dir_set", script_dir=script_dir))
+logger.info(t("startup.worker_dir_set", script_dir=RUNTIME_ROOT))
 
 from src.main import MainSystem  # noqa
 from src.manager.async_task_manager import async_task_manager  # noqa
@@ -289,7 +371,7 @@ def _save_confirmations(eula_updated: bool, privacy_updated: bool, eula_hash: st
                 file_hash=eula_hash,
             )
         )
-        Path("eula.confirmed").write_text(eula_hash, encoding="utf-8")
+        get_runtime_path("eula.confirmed").write_text(eula_hash, encoding="utf-8")
 
     if privacy_updated:
         logger.info(
@@ -299,19 +381,19 @@ def _save_confirmations(eula_updated: bool, privacy_updated: bool, eula_hash: st
                 file_hash=privacy_hash,
             )
         )
-        Path("privacy.confirmed").write_text(privacy_hash, encoding="utf-8")
+        get_runtime_path("privacy.confirmed").write_text(privacy_hash, encoding="utf-8")
 
 
 def check_eula():
     """检查EULA和隐私条款确认状态"""
     # 计算文件哈希值
-    eula_hash = _calculate_file_hash(Path("EULA.md"), "EULA.md")
-    privacy_hash = _calculate_file_hash(Path("PRIVACY.md"), "PRIVACY.md")
+    eula_hash = _calculate_file_hash(get_bundle_path("EULA.md"), "EULA.md")
+    privacy_hash = _calculate_file_hash(get_bundle_path("PRIVACY.md"), "PRIVACY.md")
 
     # 检查确认状态
-    eula_confirmed, eula_updated = _check_agreement_status(eula_hash, Path("eula.confirmed"), "EULA_AGREE")
+    eula_confirmed, eula_updated = _check_agreement_status(eula_hash, get_runtime_path("eula.confirmed"), "EULA_AGREE")
     privacy_confirmed, privacy_updated = _check_agreement_status(
-        privacy_hash, Path("privacy.confirmed"), "PRIVACY_AGREE"
+        privacy_hash, get_runtime_path("privacy.confirmed"), "PRIVACY_AGREE"
     )
 
     # 早期返回：如果都已确认且未更新

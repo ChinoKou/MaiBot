@@ -13,6 +13,7 @@ import time
 import uuid
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_logs_dir
 
 logger = get_logger("llm_cache_stats")
 
@@ -26,7 +27,7 @@ REPORT_INTERVAL_SECONDS = 300
 REPORT_INTERVAL_CALLS = 50
 SUMMARY_LIMIT = 5
 PROMPT_CACHE_POOL_SIZE = 128
-CACHE_STATS_DIR = Path("logs") / "llm_cache_stats"
+CACHE_STATS_DIR = get_logs_dir().resolve() / "llm_cache_stats"
 REPORT_FILE_NAME = "report.html"
 SESSION_REPORT_FILE_NAME = "sessions.html"
 SNIPPET_LIMIT = 160

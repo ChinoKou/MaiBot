@@ -12,11 +12,11 @@ import asyncio
 from src.common.database.database import get_db_session
 from src.common.database.database_model import Images, ImageType
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 
 logger = get_logger("image_cache_cleanup")
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.absolute().resolve()
-IMAGE_DIR = PROJECT_ROOT / "data" / "images"
+IMAGE_DIR = get_data_dir().resolve() / "images"
 _CACHE_IMAGE_EXTENSIONS = {
     ".avif",
     ".bmp",

@@ -10,6 +10,8 @@ from urllib.parse import quote
 import re
 import time
 
+from src.common.runtime_paths import get_logs_dir
+
 from .preview_path_utils import build_preview_chat_dir_name, normalize_preview_name
 
 HTML_NAVIGATION_START = "<!-- maibot-reasoning-html-navigation:start -->"
@@ -25,7 +27,7 @@ HTML_STEM_TIMESTAMP_PATTERN = re.compile(r"^\d+")
 class PromptPreviewLogger:
     """负责保存 Maisaka Prompt 预览文件并控制目录容量。"""
 
-    _BASE_DIR = Path("logs") / "maisaka_prompt"
+    _BASE_DIR = get_logs_dir().resolve() / "maisaka_prompt"
     _DEFAULT_MAX_PREVIEW_GROUPS_PER_CHAT = 256
     _TRIM_COUNT = 100
 

@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, HTTPException
 import json
-import shutil
 import tomlkit
 
 from src.common.logger import get_logger
@@ -16,7 +15,9 @@ from .support import (
     find_plugin_path_by_id,
     get_plugin_candidate_paths,
     get_plugin_config_path,
+    get_plugin_state_path,
     is_plugin_install_residue,
+    resolve_plugin_state_id,
     iter_plugin_directories,
     load_manifest_json,
     parse_repository_url,
@@ -120,20 +121,9 @@ def _remove_path(path: Path) -> None:
 
 
 def _restore_known_user_files(source_plugin_path: Path, target_plugin_path: Path) -> None:
-    """只恢复 WebUI 明确管理的用户文件，不自动混入未知文件。"""
-    config_path = source_plugin_path / "config.toml"
-    if config_path.is_symlink():
-        raise HTTPException(status_code=400, detail="插件配置文件不能是符号链接")
-    if config_path.is_file():
-        target_config_path = target_plugin_path / "config.toml"
-        _remove_path(target_config_path)
-        shutil.copy2(config_path, target_config_path)
+    """旧版代码目录配置已迁出，不在插件更新时混入用户文件。"""
 
-    config_backup_dir = source_plugin_path / "config_back"
-    if config_backup_dir.is_dir() and not config_backup_dir.is_symlink():
-        target_backup_dir = target_plugin_path / "config_back"
-        _remove_path(target_backup_dir)
-        shutil.copytree(config_backup_dir, target_backup_dir)
+    _ = source_plugin_path, target_plugin_path
 
 
 def _read_required_manifest(plugin_path: Path) -> Dict[str, Any]:
@@ -246,8 +236,8 @@ async def _update_non_git_plugin(
         raise
 
 
-def _write_plugin_disabled_for_uninstall(plugin_path: Path) -> None:
-    config_path = resolve_plugin_file_path(plugin_path, "config.toml")
+def _write_plugin_disabled_for_uninstall(plugin_id: str, plugin_path: Path) -> None:
+    config_path = get_plugin_config_path(plugin_id, plugin_path)
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as file_obj:
             config_doc = tomlkit.load(file_obj)
@@ -260,13 +250,14 @@ def _write_plugin_disabled_for_uninstall(plugin_path: Path) -> None:
         config_doc["plugin"] = plugin_section
     plugin_section["enabled"] = False
 
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w", encoding="utf-8") as file_obj:
         file_obj.write(tomlkit.dumps(config_doc))
 
 
 async def _release_plugin_runtime_before_delete(plugin_id: str, plugin_path: Path) -> bool:
     try:
-        _write_plugin_disabled_for_uninstall(plugin_path)
+        _write_plugin_disabled_for_uninstall(plugin_id, plugin_path)
 
         from src.plugin_runtime.integration import get_plugin_runtime_manager
 
@@ -463,7 +454,10 @@ async def uninstall_plugin(
             operation="uninstall",
             plugin_id=plugin_id,
         )
+        state_path = get_plugin_state_path(resolve_plugin_state_id(runtime_plugin_id, plugin_path))
         remove_tree(plugin_path)
+        if state_path.exists():
+            remove_tree(state_path)
         logger.info(f"成功卸载插件: {plugin_id} ({plugin_name})")
         await update_progress(
             stage="success",

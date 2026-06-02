@@ -116,6 +116,16 @@ class _DemoConfigPlugin:
         }
 
 
+def _plugin_config_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, plugin_id: str = "demo.plugin") -> Path:
+    """返回测试运行根目录下的插件配置路径。"""
+
+    runtime_root = tmp_path / "runtime-root"
+    monkeypatch.setenv("MAIBOT_RUNTIME_ROOT", str(runtime_root))
+    config_path = runtime_root / "plugins" / "data" / plugin_id / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    return config_path
+
+
 class _StrictConfigPlugin:
     """用于测试配置校验错误的伪插件。"""
 
@@ -160,7 +170,11 @@ class _StrictConfigPlugin:
         return {"plugin": {"config_version": "2.0.0", "enabled": True, "retry_count": 0}}
 
 
-def test_runner_apply_plugin_config_generates_config_file(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_runner_apply_plugin_config_generates_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """Runner 注入配置时应自动补齐并落盘 config.toml。"""
 
     plugin = _DemoConfigPlugin()
@@ -170,13 +184,12 @@ def test_runner_apply_plugin_config_generates_config_file(tmp_path: Path) -> Non
         plugin_dirs=[],
     )
     meta = SimpleNamespace(plugin_id="demo.plugin", plugin_dir=str(tmp_path), instance=plugin)
+    config_path = _plugin_config_path(monkeypatch, tmp_path)
 
-    runner._apply_plugin_config(
+    await runner._apply_plugin_config(
         cast(Any, meta),
         config_data={"plugin": {"config_version": "2.0.0", "enabled": False}},
     )
-
-    config_path = tmp_path / "config.toml"
     assert config_path.exists()
     assert plugin.received_config == {"plugin": {"config_version": "2.0.0", "enabled": False, "retry_count": 3}}
 
@@ -185,7 +198,11 @@ def test_runner_apply_plugin_config_generates_config_file(tmp_path: Path) -> Non
     assert saved_config == {"plugin": {"config_version": "2.0.0", "enabled": False, "retry_count": 3}}
 
 
-def test_runner_apply_plugin_config_preserves_existing_comments(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_runner_apply_plugin_config_preserves_existing_comments(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """Runner 在版本升级时应尽量保留现有 config.toml 注释。"""
 
     plugin = _DemoConfigPlugin()
@@ -195,13 +212,13 @@ def test_runner_apply_plugin_config_preserves_existing_comments(tmp_path: Path) 
         plugin_dirs=[],
     )
     meta = SimpleNamespace(plugin_id="demo.plugin", plugin_dir=str(tmp_path), instance=plugin)
-    config_path = tmp_path / "config.toml"
+    config_path = _plugin_config_path(monkeypatch, tmp_path)
     config_path.write_text(
         '# 插件配置头注释\n[plugin]\nconfig_version = "1.0.0"\nenabled = false # 启用开关注释\n',
         encoding="utf-8",
     )
 
-    runner._apply_plugin_config(cast(Any, meta))
+    await runner._apply_plugin_config(cast(Any, meta))
 
     config_text = config_path.read_text(encoding="utf-8")
     assert "# 插件配置头注释" in config_text
@@ -212,7 +229,11 @@ def test_runner_apply_plugin_config_preserves_existing_comments(tmp_path: Path) 
     assert saved_config == {"plugin": {"config_version": "2.0.0", "enabled": False, "retry_count": 3}}
 
 
-def test_runner_apply_plugin_config_same_version_does_not_rewrite_file(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_runner_apply_plugin_config_same_version_does_not_rewrite_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """Runner 在配置版本未变化时不应仅因补齐默认值而重写文件。"""
 
     plugin = _DemoConfigPlugin()
@@ -222,17 +243,21 @@ def test_runner_apply_plugin_config_same_version_does_not_rewrite_file(tmp_path:
         plugin_dirs=[],
     )
     meta = SimpleNamespace(plugin_id="demo.plugin", plugin_dir=str(tmp_path), instance=plugin)
-    config_path = tmp_path / "config.toml"
+    config_path = _plugin_config_path(monkeypatch, tmp_path)
     original_config_text = '# 原始注释\n[plugin]\nconfig_version = "2.0.0"\nenabled = false\n'
     config_path.write_text(original_config_text, encoding="utf-8")
 
-    runner._apply_plugin_config(cast(Any, meta))
+    await runner._apply_plugin_config(cast(Any, meta))
 
     assert plugin.received_config == {"plugin": {"config_version": "2.0.0", "enabled": False, "retry_count": 3}}
     assert config_path.read_text(encoding="utf-8") == original_config_text
 
 
-def test_runner_apply_plugin_config_requires_config_version(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_runner_apply_plugin_config_requires_config_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """Runner 应拒绝缺少配置版本号的插件配置文件。"""
 
     plugin = _DemoConfigPlugin()
@@ -242,11 +267,11 @@ def test_runner_apply_plugin_config_requires_config_version(tmp_path: Path) -> N
         plugin_dirs=[],
     )
     meta = SimpleNamespace(plugin_id="demo.plugin", plugin_dir=str(tmp_path), instance=plugin)
-    config_path = tmp_path / "config.toml"
+    config_path = _plugin_config_path(monkeypatch, tmp_path)
     config_path.write_text("[plugin]\nenabled = true\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="config_version"):
-        runner._apply_plugin_config(cast(Any, meta))
+        await runner._apply_plugin_config(cast(Any, meta))
 
 
 def test_component_query_service_returns_plugin_config_schema(monkeypatch: Any) -> None:
@@ -412,7 +437,7 @@ async def test_update_plugin_config_prefers_runtime_validation(
 ) -> None:
     """WebUI 保存插件配置时应优先使用运行时校验结果。"""
 
-    config_path = tmp_path / "config.toml"
+    config_path = _plugin_config_path(monkeypatch, tmp_path)
 
     async def _mock_validate_plugin_config(plugin_id: str, config_data: Dict[str, Any]) -> Dict[str, Any] | None:
         """返回运行时归一化后的配置。

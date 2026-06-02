@@ -4,7 +4,6 @@
 提供从各个 AI 厂商 API 获取可用模型列表的代理接口
 """
 
-import os
 from typing import Dict, List, Optional
 
 import httpx
@@ -12,7 +11,7 @@ import tomlkit
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.common.logger import get_logger
-from src.config.config import CONFIG_DIR
+from src.common.runtime_paths import get_model_config_path
 from src.config.model_configs import APIProvider
 from src.llm_models.model_client import ensure_client_type_loaded
 from src.llm_models.model_client.base_client import client_registry
@@ -223,8 +222,8 @@ def _get_provider_config(provider_name: str) -> Optional[Dict]:
     Returns:
         提供商配置，如果未找到则返回 None
     """
-    config_path = os.path.join(CONFIG_DIR, "model_config.toml")
-    if not os.path.exists(config_path):
+    config_path = get_model_config_path()
+    if not config_path.exists():
         return None
 
     try:
@@ -427,8 +426,8 @@ async def test_provider_connection_by_name(
     通过提供商名称测试连接（从配置文件读取信息）
     """
     # 读取配置文件
-    model_config_path = os.path.join(CONFIG_DIR, "model_config.toml")
-    if not os.path.exists(model_config_path):
+    model_config_path = get_model_config_path()
+    if not model_config_path.exists():
         raise HTTPException(status_code=404, detail="配置文件不存在")
 
     with open(model_config_path, "r", encoding="utf-8") as f:

@@ -6,7 +6,6 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable, Coroutine, Dict, List, Tuple, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -33,6 +32,7 @@ from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from PIL import Image as PILImage
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_logs_dir
 from src.config.model_configs import APIProvider, ReasoningParseMode, ToolArgumentParseMode
 from src.llm_models.exceptions import (
     EmptyResponseException,
@@ -74,7 +74,7 @@ from ..request_snapshot import (
 
 logger = get_logger("llm_models")
 
-DEBUG_REPLY_CACHE_DIR = Path("logs/debug_reply_cache")
+DEBUG_REPLY_CACHE_DIR = get_logs_dir().resolve() / "debug_reply_cache"
 
 SUPPORTED_OPENAI_IMAGE_FORMATS = {"jpeg", "png", "webp"}
 """OpenAI 兼容图片输入稳定支持的格式集合。"""

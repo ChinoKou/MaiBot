@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Tuple
 
 import json
@@ -33,6 +32,7 @@ from src.common.data_models.reply_generation_data_models import (
 )
 from src.common.i18n import get_locale
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_logs_dir
 from src.common.utils.utils_config import ChatConfigUtils
 from src.config.config import global_config
 from src.config.model_configs import ModelInfo
@@ -56,7 +56,7 @@ from .maisaka_expression_selector import maisaka_expression_selector
 
 logger = get_logger("replyer")
 
-DEBUG_REPLY_CACHE_DIR = Path("logs/debug_reply_cache")
+DEBUG_REPLY_CACHE_DIR = get_logs_dir().resolve() / "debug_reply_cache"
 REPLYER_MAX_HOOK_RETRIES = 3
 
 

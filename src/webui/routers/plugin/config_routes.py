@@ -18,7 +18,6 @@ from .support import (
     get_plugin_config_path,
     normalize_dotted_keys,
     require_plugin_token,
-    resolve_plugin_file_path,
 )
 
 logger = get_logger("webui.plugin_routes")
@@ -248,17 +247,18 @@ def _build_toml_document(config_data: Dict[str, Any]) -> tomlkit.TOMLDocument:
     return tomlkit.parse(tomlkit.dumps(config_data))
 
 
-def _load_plugin_config_from_disk(plugin_path: Path) -> Dict[str, Any]:
-    """从磁盘读取插件配置。
+def _load_plugin_config_from_disk(plugin_id: str, plugin_path: Path) -> Dict[str, Any]:
+    """从磁盘读取插件外置配置。
 
     Args:
+        plugin_id: 插件 ID。
         plugin_path: 插件目录。
 
     Returns:
         Dict[str, Any]: 当前配置字典；文件不存在时返回空字典。
     """
 
-    config_path = resolve_plugin_file_path(plugin_path, "config.toml")
+    config_path = get_plugin_config_path(plugin_id, plugin_path)
     if not config_path.exists():
         return {}
 
@@ -350,7 +350,7 @@ async def get_plugin_config_schema(plugin_id: str, maibot_session: Optional[str]
         current_config: Any = (
             dict(runtime_snapshot.normalized_config)
             if runtime_snapshot is not None
-            else _load_plugin_config_from_disk(plugin_path)
+            else _load_plugin_config_from_disk(plugin_id, plugin_path)
         )
 
         return {"success": True, "schema": _build_schema_from_current_config(plugin_id, current_config)}
@@ -480,7 +480,7 @@ async def get_plugin_config(plugin_id: str, maibot_session: Optional[str] = Cook
         if not config_path.exists():
             return {"success": True, "config": {}, "message": "配置文件不存在"}
 
-        return {"success": True, "config": _load_plugin_config_from_disk(plugin_path)}
+        return {"success": True, "config": _load_plugin_config_from_disk(plugin_id, plugin_path)}
     except HTTPException:
         raise
     except Exception as e:
@@ -525,7 +525,7 @@ async def update_plugin_config(
             base_config = (
                 dict(runtime_snapshot.normalized_config)
                 if runtime_snapshot is not None
-                else _load_plugin_config_from_disk(plugin_path)
+                else _load_plugin_config_from_disk(plugin_id, plugin_path)
             )
             config_data = _merge_plugin_config_patch(base_config, config_patch)
             runtime_validated_config = await _validate_plugin_config_via_runtime(plugin_id, config_data)
@@ -622,7 +622,7 @@ async def toggle_plugin(plugin_id: str, maibot_session: Optional[str] = Cookie(N
         current_config = (
             dict(runtime_snapshot.normalized_config)
             if runtime_snapshot is not None
-            else _load_plugin_config_from_disk(plugin_path)
+            else _load_plugin_config_from_disk(plugin_id, plugin_path)
         )
         config = _build_toml_document(current_config)
 

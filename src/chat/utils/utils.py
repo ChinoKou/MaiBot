@@ -11,6 +11,7 @@ import time
 from src.chat.message_receive.chat_manager import chat_manager as _chat_manager
 from src.chat.message_receive.message import SessionMessage
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 from src.config.config import global_config
 from src.person_info.person_info import Person
 from src.services.embedding_service import EmbeddingServiceClient
@@ -797,9 +798,9 @@ def record_replyer_action_temp(chat_id: str, reason: str, think_level: int) -> N
         think_level: 思考深度等级
     """
     try:
-        # 确保data/temp目录存在
-        temp_dir = "data/temp"
-        os.makedirs(temp_dir, exist_ok=True)
+        # 确保 data/temp 目录存在
+        temp_dir = get_data_dir().resolve() / "temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
 
         # 创建记录数据
         record_data = {
@@ -812,7 +813,7 @@ def record_replyer_action_temp(chat_id: str, reason: str, think_level: int) -> N
         # 生成文件名（使用时间戳避免冲突）
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"replyer_action_{timestamp_str}.json"
-        filepath = os.path.join(temp_dir, filename)
+        filepath = temp_dir / filename
 
         # 写入文件
         with open(filepath, "w", encoding="utf-8") as f:
