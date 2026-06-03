@@ -3,16 +3,9 @@ name: PyInstaller Binary Distribution
 on:
   push:
     tags:
-      - "v*.*.*"
-      - "v*"
-      - "*.*.*"
-      - "*.*.*-*"
+      - "*"
+
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: "用于产物命名的 Tag 名称"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -20,8 +13,6 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.platform }} binary
-    env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -77,7 +68,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}_${{ env.RELEASE_TAG }}${{ matrix.ext }}
+          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}${{ matrix.ext }}
         run: |
           New-Item -ItemType Directory -Force -Path ".artifacts" | Out-Null
           $ArtifactPath = Join-Path (Resolve-Path ".artifacts").Path $env:ARTIFACT_NAME
@@ -93,7 +84,7 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         env:
-          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}_${{ env.RELEASE_TAG }}${{ matrix.ext }}
+          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}${{ matrix.ext }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts
@@ -103,7 +94,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: MaiBot_${{ matrix.platform }}
-          path: .artifacts/MaiBot_${{ matrix.platform }}_${{ env.RELEASE_TAG }}${{ matrix.ext }}
+          path: .artifacts/MaiBot_${{ matrix.platform }}${{ matrix.ext }}
           if-no-files-found: error
           retention-days: 1
 
