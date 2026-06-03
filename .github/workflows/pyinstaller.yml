@@ -124,7 +124,8 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          draft: true
+          body: |
+            Built from timestamp tag: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             ./artifacts/MaiBot_windows/*
