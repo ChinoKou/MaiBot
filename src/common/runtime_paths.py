@@ -151,6 +151,10 @@ def get_custom_prompts_dir() -> Path:
     return get_data_dir() / "custom_prompts"
 
 
+def get_char_frequency_path() -> Path:
+    return get_bundle_path("depends-data", "char_frequency.json")
+
+
 def get_runtime_dir() -> Path:
     return get_runtime_path("runtime")
 

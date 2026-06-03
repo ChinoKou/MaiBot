@@ -23,6 +23,7 @@ ROOT_DATA_FILES = (
     ("EULA.md", "."),
     ("PRIVACY.md", "."),
     ("scripts/replay_llm_request.py", "scripts"),
+    ("depends-data/char_frequency.json", "depends-data"),
 )
 DATA_TREES = (
     (ROOT / "src" / "config", "src/config"),

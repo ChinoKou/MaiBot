@@ -10,10 +10,10 @@ import time
 import jieba
 
 from collections import defaultdict
-from pathlib import Path
 from pypinyin import Style, pinyin
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_char_frequency_path
 
 logger = get_logger("typo_gen")
 
@@ -45,37 +45,14 @@ class ChineseTypoGenerator:
 
     def _load_or_create_char_frequency(self):
         """
-        加载或创建汉字频率字典
+        加载汉字频率字典
         """
-        cache_file = Path("depends-data/char_frequency.json")
+        char_frequency_path = get_char_frequency_path().resolve()
+        if not char_frequency_path.exists():
+            raise FileNotFoundError(f"？？？我 char_frequency.json 呢: {char_frequency_path}")
 
-        # 如果缓存文件存在，直接加载
-        if cache_file.exists():
-            with open(cache_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-
-        # 使用内置的词频文件
-        char_freq = defaultdict(int)
-        dict_path = os.path.join(os.path.dirname(jieba.__file__), "dict.txt")
-
-        # 读取jieba的词典文件
-        with open(dict_path, "r", encoding="utf-8") as f:
-            for line in f:
-                word, freq = line.strip().split()[:2]
-                # 对词中的每个字进行频率累加
-                for char in word:
-                    if self._is_chinese_char(char):
-                        char_freq[char] += int(freq)
-
-        # 归一化频率值
-        max_freq = max(char_freq.values())
-        normalized_freq = {char: freq / max_freq * 1000 for char, freq in char_freq.items()}
-
-        # 保存到缓存文件
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(normalized_freq, f, ensure_ascii=False, indent=2)
-
-        return normalized_freq
+        with open(char_frequency_path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
     @staticmethod
     def _create_pinyin_dict():
