@@ -13,7 +13,7 @@ import re
 
 from .i18n import get_locale, t
 from .i18n.loaders import DEFAULT_LOCALE, extract_placeholders, normalize_locale
-from .runtime_paths import get_custom_prompts_dir, get_prompts_dir, get_runtime_root
+from .runtime_paths import get_custom_prompts_dir, get_prompts_dir, get_runtime_root, is_frozen_app
 
 logger = logging.getLogger("maibot.prompt_i18n")
 
@@ -52,6 +52,8 @@ def get_custom_prompts_root(
 ) -> Path:
     if custom_prompts_root is not None:
         return custom_prompts_root.resolve()
+    if is_frozen_app():
+        return get_custom_prompts_dir().resolve()
     if prompts_root is not None:
         return (prompts_root.resolve().parent / "data" / "custom_prompts").resolve()
     return CUSTOM_PROMPTS_ROOT

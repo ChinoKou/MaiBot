@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.common.i18n import set_locale
-from src.common.prompt_i18n import clear_prompt_cache, load_prompt, list_prompt_templates
+from src.common.prompt_i18n import clear_prompt_cache, get_custom_prompts_root, load_prompt, list_prompt_templates
 from src.common.runtime_paths import get_prompts_dir
 from src.prompt.prompt_manager import PromptManager
 
@@ -39,6 +39,35 @@ def test_get_prompts_dir_falls_back_to_bundle_when_runtime_prompts_are_empty(
     monkeypatch.setenv("MAIBOT_BUNDLE_ROOT", str(bundle_root))
 
     assert get_prompts_dir() == bundle_root / "prompts"
+
+
+def test_get_prompts_dir_prefers_bundle_in_frozen_mode_even_when_runtime_prompts_exist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    bundle_root = tmp_path / "bundle"
+    write_prompt(runtime_root / "prompts", "zh-CN", "replyer", "runtime")
+    write_prompt(bundle_root / "prompts", "zh-CN", "replyer", "bundle")
+    monkeypatch.setenv("MAIBOT_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("MAIBOT_BUNDLE_ROOT", str(bundle_root))
+    monkeypatch.setattr("src.common.runtime_paths.sys.frozen", True, raising=False)
+
+    assert get_prompts_dir() == bundle_root / "prompts"
+
+
+def test_get_custom_prompts_root_uses_runtime_data_in_frozen_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    bundle_root = tmp_path / "bundle"
+    prompts_root = bundle_root / "prompts"
+    monkeypatch.setenv("MAIBOT_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("MAIBOT_BUNDLE_ROOT", str(bundle_root))
+    monkeypatch.setattr("src.common.runtime_paths.sys.frozen", True, raising=False)
+
+    assert get_custom_prompts_root(prompts_root=prompts_root) == (runtime_root / "data" / "custom_prompts").resolve()
 
 
 def test_load_prompt_prefers_requested_locale(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ import json
 import tomlkit
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 from src.webui.services.git_mirror_service import get_git_mirror_service
 
 from .progress import update_progress
@@ -31,6 +32,12 @@ from .support import (
 logger = get_logger("webui.plugin_routes")
 
 router = APIRouter()
+
+
+def _build_plugin_install_staging_path(plugin_id: str) -> Path:
+    safe_plugin_id = "".join(char if char.isalnum() or char in "._-" else "_" for char in plugin_id)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    return get_data_dir().resolve() / "plugin_install_tmp" / f"{safe_plugin_id}.{timestamp}"
 
 
 def _infer_plugin_id(folder_name: str, manifest: Dict[str, Any], manifest_path: Path) -> str:
@@ -304,76 +311,91 @@ async def install_plugin(request: InstallPluginRequest, maibot_session: Optional
             )
             raise HTTPException(status_code=400, detail="插件已安装")
 
+        staging_path = _build_plugin_install_staging_path(plugin_id)
         await update_progress(
-            stage="loading", progress=15, message=f"准备克隆到: {target_path}", operation="install", plugin_id=plugin_id
+            stage="loading", progress=15, message=f"准备克隆到暂存目录: {staging_path}", operation="install", plugin_id=plugin_id
         )
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
         service = get_git_mirror_service()
-        if "github.com" in repo_url:
-            result = await service.clone_repository(
-                owner=owner,
-                repo=repo,
-                target_path=target_path,
-                branch=request.branch,
-                mirror_id=request.mirror_id,
-                depth=1,
-            )
-        else:
-            result = await service.clone_repository(
-                owner=owner, repo=repo, target_path=target_path, branch=request.branch, custom_url=repo_url, depth=1
-            )
-
-        if not result.get("success"):
-            error_msg = str(result.get("error", "克隆失败"))
-            await update_progress(
-                stage="error",
-                progress=0,
-                message="克隆仓库失败",
-                operation="install",
-                plugin_id=plugin_id,
-                error=error_msg,
-            )
-            raise HTTPException(status_code=int(result.get("status_code", 500)), detail=error_msg)
-
-        await update_progress(
-            stage="loading", progress=85, message="验证插件文件...", operation="install", plugin_id=plugin_id
-        )
-        manifest_path = resolve_plugin_file_path(target_path, "_manifest.json")
-        if not manifest_path.exists():
-            remove_tree(target_path)
-            await update_progress(
-                stage="error",
-                progress=0,
-                message="插件缺少 _manifest.json",
-                operation="install",
-                plugin_id=plugin_id,
-                error="无效的插件格式",
-            )
-            raise HTTPException(status_code=400, detail="无效的插件：缺少 _manifest.json")
-
-        await update_progress(
-            stage="loading", progress=90, message="读取插件配置...", operation="install", plugin_id=plugin_id
-        )
         try:
-            with open(manifest_path, "r", encoding="utf-8") as file_obj:
-                manifest = json.load(file_obj)
-            for field in ["manifest_version", "name", "version", "author"]:
-                if field not in manifest:
-                    raise ValueError(f"缺少必需字段: {field}")
-            if not str(manifest.get("id", "")).strip():
-                manifest["id"] = plugin_id
-                with open(manifest_path, "w", encoding="utf-8") as file_obj:
-                    json.dump(manifest, file_obj, ensure_ascii=False, indent=2)
-        except Exception as e:
-            remove_tree(target_path)
+            if "github.com" in repo_url:
+                result = await service.clone_repository(
+                    owner=owner,
+                    repo=repo,
+                    target_path=staging_path,
+                    branch=request.branch,
+                    mirror_id=request.mirror_id,
+                    depth=1,
+                )
+            else:
+                result = await service.clone_repository(
+                    owner=owner,
+                    repo=repo,
+                    target_path=staging_path,
+                    branch=request.branch,
+                    custom_url=repo_url,
+                    depth=1,
+                )
+
+            if not result.get("success"):
+                error_msg = str(result.get("error", "克隆失败"))
+                await update_progress(
+                    stage="error",
+                    progress=0,
+                    message="克隆仓库失败",
+                    operation="install",
+                    plugin_id=plugin_id,
+                    error=error_msg,
+                )
+                raise HTTPException(status_code=int(result.get("status_code", 500)), detail=error_msg)
+
             await update_progress(
-                stage="error",
-                progress=0,
-                message="_manifest.json 无效",
-                operation="install",
-                plugin_id=plugin_id,
-                error=str(e),
+                stage="loading", progress=85, message="验证插件文件...", operation="install", plugin_id=plugin_id
             )
-            raise HTTPException(status_code=400, detail=f"无效的 _manifest.json: {e}") from e
+            manifest_path = resolve_plugin_file_path(staging_path, "_manifest.json")
+            if not manifest_path.exists():
+                await update_progress(
+                    stage="error",
+                    progress=0,
+                    message="插件缺少 _manifest.json",
+                    operation="install",
+                    plugin_id=plugin_id,
+                    error="无效的插件格式",
+                )
+                raise HTTPException(status_code=400, detail="无效的插件：缺少 _manifest.json")
+
+            await update_progress(
+                stage="loading", progress=90, message="读取插件配置...", operation="install", plugin_id=plugin_id
+            )
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as file_obj:
+                    manifest = json.load(file_obj)
+                for field in ["manifest_version", "name", "version", "author"]:
+                    if field not in manifest:
+                        raise ValueError(f"缺少必需字段: {field}")
+                if not str(manifest.get("id", "")).strip():
+                    manifest["id"] = plugin_id
+                    with open(manifest_path, "w", encoding="utf-8") as file_obj:
+                        json.dump(manifest, file_obj, ensure_ascii=False, indent=2)
+            except Exception as e:
+                await update_progress(
+                    stage="error",
+                    progress=0,
+                    message="_manifest.json 无效",
+                    operation="install",
+                    plugin_id=plugin_id,
+                    error=str(e),
+                )
+                raise HTTPException(status_code=400, detail=f"无效的 _manifest.json: {e}") from e
+
+            await update_progress(
+                stage="loading", progress=95, message=f"发布插件到: {target_path}", operation="install", plugin_id=plugin_id
+            )
+            staging_path.rename(target_path)
+        except Exception:
+            if staging_path.exists():
+                remove_tree(staging_path)
+            raise
 
         await update_progress(
             stage="success",

@@ -21,7 +21,7 @@ from packaging.utils import canonicalize_name
 
 from src.common.logger import get_logger
 from src.common.process_launcher import PLUGIN_PIP_INSTALL_PROCESS_ARG, build_self_launch_command
-from src.common.runtime_paths import get_plugin_dependency_dir, is_frozen_app
+from src.common.runtime_paths import get_plugin_dependency_dir, get_runtime_root, get_source_root, is_frozen_app
 from src.plugin_runtime.runner.manifest_validator import ManifestValidator, PluginManifest
 
 
@@ -89,7 +89,7 @@ class PluginDependencyPipeline:
             project_root: 项目根目录；留空时自动推断。
         """
 
-        self._project_root: Path = project_root or Path(__file__).resolve().parents[2]
+        self._project_root: Path = project_root or (get_runtime_root() if is_frozen_app() else get_source_root())
         self._manifest_validator: ManifestValidator = ManifestValidator(
             project_root=self._project_root,
             validate_python_package_dependencies=False,

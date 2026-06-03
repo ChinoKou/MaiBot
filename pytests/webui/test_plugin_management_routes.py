@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.common.runtime_paths import get_data_dir
 from src.webui.routers.plugin import icon_routes as icon_routes_module
 from src.webui.routers.plugin import management as management_module
 from src.webui.routers.plugin import support as support_module
@@ -221,7 +222,8 @@ def test_install_plugin_cleans_config_only_residue(client: TestClient, monkeypat
     class FakeGitMirrorService:
         async def clone_repository(self, **kwargs):
             target_path = kwargs["target_path"]
-            assert target_path == residue_path
+            assert target_path != residue_path
+            assert target_path.parent == get_data_dir().resolve() / "plugin_install_tmp"
             assert not (target_path / "config.toml").exists()
             target_path.mkdir(parents=True, exist_ok=True)
             (target_path / "_manifest.json").write_text(

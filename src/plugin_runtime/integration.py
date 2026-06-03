@@ -1250,7 +1250,7 @@ class PluginRuntimeManager(
         watcher = FileWatcher(
             paths=watch_paths,
             debounce_ms=600,
-            callback_timeout_s=15.0,
+            callback_timeout_s=30.0,
             callback_failure_threshold=3,
             callback_cooldown_s=30.0,
         )
@@ -1502,6 +1502,21 @@ class PluginRuntimeManager(
         except Exception as exc:
             logger.warning(f"插件 {plugin_id} 配置文件变更处理失败: {exc}")
 
+    def _is_plugin_source_change(self, path: Path) -> bool:
+        resolved_path = path.resolve()
+        plugin_state_root = get_plugin_state_root().resolve()
+        normalized_parts = {part.casefold() for part in resolved_path.parts}
+
+        if resolved_path == plugin_state_root or resolved_path.is_relative_to(plugin_state_root):
+            return False
+        if resolved_path.suffix == ".pyc":
+            return False
+        if {"__pycache__", "python_packages", "config_back"} & normalized_parts:
+            return False
+        if resolved_path.name in {"plugin.py", "_manifest.json"}:
+            return True
+        return resolved_path.suffix == ".py"
+
     async def _handle_plugin_source_changes(self, changes: Sequence[FileChange]) -> None:
         """处理插件源码相关变化。
 
@@ -1521,11 +1536,7 @@ class PluginRuntimeManager(
             logger.error(f"检测到重复插件 ID，跳过本次插件热重载: {details}")
             return
 
-        relevant_source_changes = [
-            change.path.resolve()
-            for change in changes
-            if change.path.name in {"plugin.py", "_manifest.json"} or change.path.suffix == ".py"
-        ]
+        relevant_source_changes = [change.path.resolve() for change in changes if self._is_plugin_source_change(change.path)]
         if not relevant_source_changes:
             return
 

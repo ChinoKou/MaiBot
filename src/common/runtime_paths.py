@@ -131,6 +131,12 @@ def _contains_prompt_templates(directory: Path) -> bool:
 def get_prompts_dir() -> Path:
     runtime_prompts_dir = get_runtime_path("prompts")
     bundled_prompts_dir = get_bundle_path("prompts")
+
+    if is_frozen_app():
+        if bundled_prompts_dir.exists():
+            return bundled_prompts_dir
+        return runtime_prompts_dir
+
     if runtime_prompts_dir.exists():
         if _contains_prompt_templates(runtime_prompts_dir) or not bundled_prompts_dir.exists():
             return runtime_prompts_dir

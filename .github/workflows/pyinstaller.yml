@@ -3,8 +3,16 @@ name: PyInstaller Binary Distribution
 on:
   push:
     tags:
-      - "*"
+      - "v*.*.*"
+      - "v*"
+      - "*.*.*"
+      - "*.*.*-*"
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "用于产物命名的 Tag 名称"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -12,6 +20,8 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.platform }} binary
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -55,26 +65,19 @@ jobs:
           upx --version
 
       - name: Build PyInstaller one-dir package
-        run: uv run pyinstaller --noconfirm --clean --distpath dist --workpath build/pyinstaller MaiBot.spec
+        run: uv run pyinstaller --noconfirm --clean MaiBot.spec
 
       - name: Prepare external runtime resources
         shell: pwsh
         run: |
           $AppRoot = Join-Path "dist" "MaiBot"
           New-Item -ItemType Directory -Force -Path (Join-Path $AppRoot "plugins") | Out-Null
-          if (Test-Path "prompts") {
-              $Destination = Join-Path $AppRoot "prompts"
-              New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-              Get-ChildItem -Force -Path "prompts" | ForEach-Object {
-                  Copy-Item -Path $_.FullName -Destination $Destination -Recurse -Force
-              }
-          }
 
       - name: Archive Windows package
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}_${{ github.ref_name }}${{ matrix.ext }}
+          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}_${{ env.RELEASE_TAG }}${{ matrix.ext }}
         run: |
           New-Item -ItemType Directory -Force -Path ".artifacts" | Out-Null
           $ArtifactPath = Join-Path (Resolve-Path ".artifacts").Path $env:ARTIFACT_NAME
@@ -90,7 +93,7 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         env:
-          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}_${{ github.ref_name }}${{ matrix.ext }}
+          ARTIFACT_NAME: MaiBot_${{ matrix.platform }}_${{ env.RELEASE_TAG }}${{ matrix.ext }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts
@@ -99,6 +102,32 @@ jobs:
       - name: Upload package artifact
         uses: actions/upload-artifact@v7
         with:
-          name: MaiBot_${{ matrix.platform }}_${{ github.ref_name }}${{ matrix.ext }}
-          path: .artifacts/MaiBot_${{ matrix.platform }}_${{ github.ref_name }}${{ matrix.ext }}
+          name: MaiBot_${{ matrix.platform }}
+          path: .artifacts/MaiBot_${{ matrix.platform }}_${{ env.RELEASE_TAG }}${{ matrix.ext }}
           if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Create draft release
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: ./artifacts
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            ./artifacts/MaiBot_windows/*
+            ./artifacts/MaiBot_linux/*

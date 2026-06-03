@@ -18,7 +18,7 @@ import re
 import sys
 
 from src.common.logger import get_logger
-from src.common.runtime_paths import get_plugin_dependency_dir
+from src.common.runtime_paths import get_plugin_dependency_dir, get_source_root, is_frozen_app
 from src.plugin_runtime.runner.manifest_validator import ManifestValidator, PluginManifest, is_reserved_plugin_directory
 
 logger = get_logger("plugin_runtime.runner.plugin_loader")
@@ -478,9 +478,14 @@ class PluginLoader:
 
         plugin_parent_dir = plugin_dir.parent
         plugin_dependency_dir = get_plugin_dependency_dir(plugin_id).resolve()
-        src_root = Path("src").resolve()
+        source_src_root = None if is_frozen_app() else (get_source_root() / "src").resolve()
+        source_sys_path_context = (
+            self._temporary_sys_path_entry(source_src_root, require_existing=True)
+            if source_src_root is not None
+            else contextlib.nullcontext()
+        )
         try:
-            with self._temporary_sys_path_entry(src_root):
+            with source_sys_path_context:
                 with self._temporary_sys_path_entry(plugin_parent_dir):
                     with self._temporary_sys_path_entry(plugin_dependency_dir, require_existing=True):
                         spec.loader.exec_module(module)

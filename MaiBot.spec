@@ -28,6 +28,7 @@ DATA_TREES = (
     (ROOT / "src" / "config", "src/config"),
     (ROOT / "src" / "plugins" / "built_in", "src/plugins/built_in"),
     (ROOT / "locales", "locales"),
+    (ROOT / "prompts", "prompts"),
     (Path(ensurepip.__file__).resolve().parent / "_bundled", "ensurepip/_bundled"),
 )
 DATA_PACKAGES = ("ensurepip", "maibot_dashboard")

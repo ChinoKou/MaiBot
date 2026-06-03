@@ -136,6 +136,32 @@ def test_resolve_static_path_uses_package_even_when_dashboard_dist_exists(monkey
     assert resolved_path == package_dist
 
 
+def test_resolve_static_path_prefers_bundled_dashboard_in_frozen_mode_even_when_package_exists(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    dashboard_dist = tmp_path / "dashboard" / "dist"
+    dashboard_dist.mkdir(parents=True)
+    (dashboard_dist / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    package_dist = tmp_path / "site-packages" / "maibot_dashboard" / "dist"
+    package_dist.mkdir(parents=True)
+
+    class _DashboardModule:
+        @staticmethod
+        def get_dist_path() -> Path:
+            return package_dist
+
+    monkeypatch.setenv("MAIBOT_BUNDLE_ROOT", str(tmp_path))
+    monkeypatch.setattr("src.common.runtime_paths.sys.frozen", True, raising=False)
+
+    with patch.object(webui_app, "import_module", return_value=_DashboardModule()) as import_module_mock:
+        resolved_path = webui_app._resolve_static_path()
+
+    assert resolved_path == dashboard_dist.resolve()
+    import_module_mock.assert_not_called()
+
+
 def test_resolve_safe_static_file_path_allows_regular_static_file(tmp_path) -> None:
     static_path = tmp_path / "dist"
     asset_path = static_path / "assets" / "app.js"

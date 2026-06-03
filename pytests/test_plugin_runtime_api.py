@@ -1,10 +1,13 @@
 """插件 API 注册与调用测试。"""
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
 import pytest
+from watchfiles import Change
 
+from src.config.file_watcher import FileChange
 from src.plugin_runtime.integration import PluginRuntimeManager
 from src.plugin_runtime.host.supervisor import PluginSupervisor
 from src.plugin_runtime.protocol.envelope import (
@@ -405,6 +408,75 @@ async def test_api_registry_supports_multiple_versions_with_distinct_handlers(
     assert captured["plugin_id"] == "provider"
     assert captured["component_name"] == "handle_render_html_v2"
     assert captured["args"] == {"html": "<div>Hello</div>"}
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_change_filter_ignores_runtime_dependency_files(tmp_path: Path) -> None:
+    manager = PluginRuntimeManager()
+    manager._started = True
+
+    state_root = tmp_path / "plugins" / "data"
+    dependency_file = state_root / "demo.plugin" / "python_packages" / "anthropic" / "__init__.py"
+    dependency_file.parent.mkdir(parents=True, exist_ok=True)
+    dependency_file.write_text("# dependency", encoding="utf-8")
+
+    plugin_root = tmp_path / "plugins" / "demo_plugin"
+    plugin_root.mkdir(parents=True, exist_ok=True)
+
+    manager._iter_plugin_dirs = lambda: [plugin_root]  # type: ignore[method-assign]
+    manager._find_duplicate_plugin_ids = lambda _dirs: {}  # type: ignore[method-assign]
+
+    sync_calls: List[List[Path]] = []
+    restart_calls: List[str] = []
+
+    async def fake_sync(plugin_dirs):
+        sync_calls.append(list(plugin_dirs))
+        return SimpleNamespace(environment_changed=False, blocked_changed_plugin_ids=set())
+
+    async def fake_restart(reason: str) -> bool:
+        restart_calls.append(reason)
+        return True
+
+    manager._sync_plugin_dependencies = fake_sync  # type: ignore[method-assign]
+    manager._restart_supervisors = fake_restart  # type: ignore[method-assign]
+
+    await manager._handle_plugin_source_changes([FileChange(change_type=Change.added, path=dependency_file)])
+
+    assert sync_calls == []
+    assert restart_calls == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_source_change_filter_accepts_real_plugin_python_files(tmp_path: Path) -> None:
+    manager = PluginRuntimeManager()
+    manager._started = True
+
+    plugin_root = tmp_path / "plugins" / "demo_plugin"
+    plugin_root.mkdir(parents=True, exist_ok=True)
+    plugin_file = plugin_root / "plugin.py"
+    plugin_file.write_text("def create_plugin():\n    return object()\n", encoding="utf-8")
+
+    manager._iter_plugin_dirs = lambda: [plugin_root]  # type: ignore[method-assign]
+    manager._find_duplicate_plugin_ids = lambda _dirs: {}  # type: ignore[method-assign]
+
+    sync_calls: List[List[Path]] = []
+    restart_calls: List[str] = []
+
+    async def fake_sync(plugin_dirs):
+        sync_calls.append(list(plugin_dirs))
+        return SimpleNamespace(environment_changed=False, blocked_changed_plugin_ids=set())
+
+    async def fake_restart(reason: str) -> bool:
+        restart_calls.append(reason)
+        return True
+
+    manager._sync_plugin_dependencies = fake_sync  # type: ignore[method-assign]
+    manager._restart_supervisors = fake_restart  # type: ignore[method-assign]
+
+    await manager._handle_plugin_source_changes([FileChange(change_type=Change.modified, path=plugin_file)])
+
+    assert sync_calls == [[plugin_root]]
+    assert restart_calls == ["file_watcher"]
 
 
 @pytest.mark.asyncio

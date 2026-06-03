@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 
 from src.common.i18n import t
 from src.common.logger import get_logger
-from src.common.runtime_paths import get_dashboard_dist_dir, get_runtime_root
+from src.common.runtime_paths import get_dashboard_dist_dir, get_runtime_root, is_frozen_app
 from src.webui.dependencies import require_auth
 
 logger = get_logger("webui.app")
@@ -237,7 +237,7 @@ def _setup_static_files(app: FastAPI):
 
 
 def _resolve_static_path() -> Path | None:
-    if _is_local_dashboard_enabled():
+    if is_frozen_app() or _is_local_dashboard_enabled():
         bundled_static_path = get_dashboard_dist_dir().resolve()
         if bundled_static_path.is_dir() and (bundled_static_path / "index.html").exists():
             return bundled_static_path
