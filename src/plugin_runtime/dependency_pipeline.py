@@ -49,6 +49,22 @@ class PluginPackageRequirement:
 
 
 @dataclass(frozen=True)
+class PackageIndexCandidate:
+    """表示一个可尝试的 Python 包索引源。"""
+
+    name: str
+    url: str
+    insecure_host: str = ""
+
+
+PACKAGE_INDEX_FALLBACKS: Tuple[PackageIndexCandidate, ...] = (
+    PackageIndexCandidate("清华 Tuna", "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"),
+    PackageIndexCandidate("阿里云", "http://mirrors.aliyun.com/pypi/simple", insecure_host="mirrors.aliyun.com"),
+    PackageIndexCandidate("官方 PyPI", "https://pypi.org/simple"),
+)
+
+
+@dataclass(frozen=True)
 class DependencyPipelinePlan:
     """表示一次依赖分析后得到的计划。"""
 
@@ -421,38 +437,58 @@ class PluginDependencyPipeline:
                 f"开始自动安装插件 Python 依赖: {', '.join(requirement_texts)} -> {target_dir} "
                 f"(plugins={', '.join(plugin_ids)})"
             )
-            command = self._build_install_command(requirement_texts, target_dir)
 
-            try:
-                completed_process = await asyncio.to_thread(
-                    subprocess.run,
-                    command,
-                    capture_output=True,
-                    check=False,
-                    cwd=self._project_root,
-                    text=True,
+            install_succeeded = False
+            last_error_message = ""
+            for index_candidate in PACKAGE_INDEX_FALLBACKS:
+                command = self._build_install_command(requirement_texts, target_dir, index_candidate)
+                logger.info(
+                    f"尝试插件 Python 依赖安装源: {index_candidate.name} ({index_candidate.url}) "
+                    f"-> {target_dir} (plugins={', '.join(plugin_ids)})"
                 )
-            except Exception as exc:
-                failed_plugin_ids.extend(plugin_ids)
-                error_messages.append(f"{', '.join(plugin_ids)}: {exc}")
+
+                try:
+                    completed_process = await asyncio.to_thread(
+                        subprocess.run,
+                        command,
+                        capture_output=True,
+                        check=False,
+                        cwd=self._project_root,
+                        text=True,
+                    )
+                except Exception as exc:
+                    last_error_message = str(exc)
+                    logger.warning(
+                        f"插件 Python 依赖安装源 {index_candidate.name} 执行异常: {exc} "
+                        f"(plugins={', '.join(plugin_ids)})"
+                    )
+                    continue
+
+                if completed_process.returncode == 0:
+                    environment_changed = True
+                    install_succeeded = True
+                    logger.info(f"插件 Python 依赖自动安装完成: {target_dir} (source={index_candidate.name})")
+                    break
+
+                output = self._summarize_install_error(completed_process.stdout, completed_process.stderr)
+                last_error_message = output or f"命令执行失败，退出码 {completed_process.returncode}"
+                logger.warning(
+                    f"插件 Python 依赖安装源 {index_candidate.name} 失败: {last_error_message} "
+                    f"(plugins={', '.join(plugin_ids)})"
+                )
+                logger.debug(
+                    "插件 Python 依赖安装命令失败: returncode=%s, command=%s, stdout=%r, stderr=%r",
+                    completed_process.returncode,
+                    command,
+                    completed_process.stdout,
+                    completed_process.stderr,
+                )
+
+            if install_succeeded:
                 continue
 
-            if completed_process.returncode == 0:
-                environment_changed = True
-                logger.info(f"插件 Python 依赖自动安装完成: {target_dir}")
-                continue
-
-            output = self._summarize_install_error(completed_process.stdout, completed_process.stderr)
-            error_message = output or f"命令执行失败，退出码 {completed_process.returncode}"
             failed_plugin_ids.extend(plugin_ids)
-            error_messages.append(f"{', '.join(plugin_ids)}: {error_message}")
-            logger.debug(
-                "插件 Python 依赖安装命令失败: returncode=%s, command=%s, stdout=%r, stderr=%r",
-                completed_process.returncode,
-                command,
-                completed_process.stdout,
-                completed_process.stderr,
-            )
+            error_messages.append(f"{', '.join(plugin_ids)}: {last_error_message or '所有索引源均安装失败'}")
 
         if failed_plugin_ids:
             return DependencyInstallResult(
@@ -465,12 +501,20 @@ class PluginDependencyPipeline:
         return DependencyInstallResult(succeeded=True, environment_changed=environment_changed)
 
     @staticmethod
-    def _build_install_command(requirement_texts: Sequence[str], target_dir: Path) -> List[str]:
+    def _build_install_command(
+        requirement_texts: Sequence[str],
+        target_dir: Path,
+        index_candidate: PackageIndexCandidate,
+    ) -> List[str]:
         """构造依赖安装命令。
 
         frozen 模式下复用当前 PyInstaller 运行时，通过内部 pip 子命令安装到外置插件依赖目录。
         源码模式仍优先使用 uv，否则回退到当前 Python 的 pip。
         """
+
+        pip_index_args = ["--index-url", index_candidate.url]
+        if index_candidate.insecure_host:
+            pip_index_args.extend(["--trusted-host", index_candidate.insecure_host])
 
         if is_frozen_app():
             return build_self_launch_command(
@@ -479,6 +523,7 @@ class PluginDependencyPipeline:
                     "--disable-pip-version-check",
                     "--no-input",
                     "--no-warn-script-location",
+                    *pip_index_args,
                     "--target",
                     str(target_dir),
                     "--upgrade",
@@ -487,12 +532,16 @@ class PluginDependencyPipeline:
             )
 
         if shutil.which("uv"):
+            uv_index_args = ["--default-index", index_candidate.url]
+            if index_candidate.insecure_host:
+                uv_index_args.extend(["--allow-insecure-host", index_candidate.insecure_host])
             return [
                 "uv",
                 "pip",
                 "install",
                 "--python",
                 str(Path(sys.executable).resolve()),
+                *uv_index_args,
                 "--target",
                 str(target_dir),
                 "--upgrade",
@@ -506,6 +555,7 @@ class PluginDependencyPipeline:
             "--disable-pip-version-check",
             "--no-input",
             "--no-warn-script-location",
+            *pip_index_args,
             "--target",
             str(target_dir),
             "--upgrade",

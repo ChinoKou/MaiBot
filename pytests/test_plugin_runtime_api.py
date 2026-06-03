@@ -480,6 +480,81 @@ async def test_plugin_source_change_filter_accepts_real_plugin_python_files(tmp_
 
 
 @pytest.mark.asyncio
+async def test_sync_and_load_plugin_globally_restarts_when_runtime_plugin_dirs_change(tmp_path: Path) -> None:
+    manager = PluginRuntimeManager()
+    manager._started = True
+
+    builtin_root = tmp_path / "builtin_plugins"
+    third_party_root = tmp_path / "plugins"
+    builtin_root.mkdir(parents=True, exist_ok=True)
+    third_party_root.mkdir(parents=True, exist_ok=True)
+
+    manager._resolve_runtime_plugin_dirs = lambda: ([builtin_root], [third_party_root])  # type: ignore[method-assign]
+    manager._iter_plugin_dirs = lambda: [builtin_root]  # type: ignore[method-assign]
+    manager._find_duplicate_plugin_ids = lambda _dirs: {}  # type: ignore[method-assign]
+
+    sync_calls: List[List[Path]] = []
+    restart_calls: List[str] = []
+
+    async def fake_sync(plugin_dirs):
+        sync_calls.append(list(plugin_dirs))
+        return SimpleNamespace(environment_changed=False, blocked_changed_plugin_ids=set())
+
+    async def fake_restart(reason: str) -> bool:
+        restart_calls.append(reason)
+        return True
+
+    manager._sync_plugin_dependencies = fake_sync  # type: ignore[method-assign]
+    manager._restart_supervisors = fake_restart  # type: ignore[method-assign]
+    manager.get_plugin_load_statuses = lambda: {"demo.plugin": "success"}  # type: ignore[method-assign]
+
+    loaded = await manager.sync_and_load_plugin_globally("demo.plugin", reason="install")
+
+    assert loaded is True
+    assert sync_calls == [[builtin_root.resolve(), third_party_root.resolve()]]
+    assert restart_calls == ["install_plugin_dirs_changed"]
+
+
+@pytest.mark.asyncio
+async def test_sync_and_load_plugin_globally_falls_back_to_direct_load_without_restart(tmp_path: Path) -> None:
+    manager = PluginRuntimeManager()
+    manager._started = True
+
+    builtin_root = tmp_path / "builtin_plugins"
+    third_party_root = tmp_path / "plugins"
+    builtin_root.mkdir(parents=True, exist_ok=True)
+    third_party_root.mkdir(parents=True, exist_ok=True)
+
+    runtime_dirs = [builtin_root.resolve(), third_party_root.resolve()]
+    manager._resolve_runtime_plugin_dirs = lambda: ([builtin_root], [third_party_root])  # type: ignore[method-assign]
+    manager._iter_plugin_dirs = lambda: runtime_dirs  # type: ignore[method-assign]
+    manager._find_duplicate_plugin_ids = lambda _dirs: {}  # type: ignore[method-assign]
+
+    sync_calls: List[List[Path]] = []
+    load_calls: List[tuple[str, str]] = []
+    refresh_calls: List[str] = []
+
+    async def fake_sync(plugin_dirs):
+        sync_calls.append(list(plugin_dirs))
+        return SimpleNamespace(environment_changed=False, blocked_changed_plugin_ids=set())
+
+    async def fake_load(plugin_id: str, reason: str = "manual") -> bool:
+        load_calls.append((plugin_id, reason))
+        return True
+
+    manager._sync_plugin_dependencies = fake_sync  # type: ignore[method-assign]
+    manager.load_plugin_globally = fake_load  # type: ignore[method-assign]
+    manager._refresh_plugin_config_watch_subscriptions = lambda: refresh_calls.append("refresh")  # type: ignore[method-assign]
+
+    loaded = await manager.sync_and_load_plugin_globally("demo.plugin", reason="install")
+
+    assert loaded is True
+    assert sync_calls == [runtime_dirs]
+    assert refresh_calls == ["refresh"]
+    assert load_calls == [("demo.plugin", "install")]
+
+
+@pytest.mark.asyncio
 async def test_api_replace_dynamic_can_offline_removed_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

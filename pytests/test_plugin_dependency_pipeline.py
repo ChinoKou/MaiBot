@@ -9,7 +9,9 @@ import pytest
 
 from src.common.process_launcher import PLUGIN_PIP_INSTALL_PROCESS_ARG
 from src.plugin_runtime.dependency_pipeline import (
+    PACKAGE_INDEX_FALLBACKS,
     DependencyInstallResult,
+    PackageIndexCandidate,
     PluginDependencyPipeline,
     PluginPackageRequirement,
 )
@@ -381,6 +383,150 @@ async def test_install_requirements_keeps_successes_when_one_target_fails(
     assert "test.plugin-b: network error" in result.error_message
 
 
+@pytest.mark.asyncio
+async def test_install_requirements_falls_back_to_next_index_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """前一个索引源失败时，应自动回落到下一个索引源。"""
+
+    pipeline = PluginDependencyPipeline(project_root=Path.cwd())
+    target_dir = tmp_path / "packages"
+    attempted_indexes: list[str] = []
+
+    def fake_run(command, **_kwargs) -> SimpleNamespace:
+        if "--default-index" in command:
+            index_flag = "--default-index"
+        else:
+            index_flag = "--index-url"
+        attempted_index = command[command.index(index_flag) + 1]
+        attempted_indexes.append(attempted_index)
+        if attempted_index == PACKAGE_INDEX_FALLBACKS[0].url:
+            return SimpleNamespace(returncode=1, stdout="", stderr="timeout")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("src.plugin_runtime.dependency_pipeline.subprocess.run", fake_run)
+
+    result = await pipeline._install_requirements(
+        [
+            PluginPackageRequirement(
+                package_name="demo-package",
+                plugin_id="test.plugin-a",
+                requirement_text="demo-package>=1.0.0",
+                version_spec=">=1.0.0",
+                target_dir=target_dir,
+            )
+        ]
+    )
+
+    assert result.succeeded is True
+    assert result.environment_changed is True
+    assert attempted_indexes == [PACKAGE_INDEX_FALLBACKS[0].url, PACKAGE_INDEX_FALLBACKS[1].url]
+
+
+@pytest.mark.parametrize(
+    ("frozen", "index_candidate", "expected_command"),
+    [
+        pytest.param(
+            True,
+            PackageIndexCandidate("官方 PyPI", "https://pypi.org/simple"),
+            [
+                "MaiBot.exe",
+                PLUGIN_PIP_INSTALL_PROCESS_ARG,
+                "--disable-pip-version-check",
+                "--no-input",
+                "--no-warn-script-location",
+                "--index-url",
+                "https://pypi.org/simple",
+                "--target",
+                "PACKAGES",
+                "--upgrade",
+                "demo-package>=1.0.0",
+            ],
+            id="frozen-official",
+        ),
+        pytest.param(
+            False,
+            PackageIndexCandidate("清华 Tuna", "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"),
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                "PYTHON",
+                "--default-index",
+                "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
+                "--target",
+                "PACKAGES",
+                "--upgrade",
+                "demo-package>=1.0.0",
+            ],
+            id="source-uv-tuna",
+        ),
+        pytest.param(
+            False,
+            PackageIndexCandidate(
+                "阿里云",
+                "http://mirrors.aliyun.com/pypi/simple",
+                insecure_host="mirrors.aliyun.com",
+            ),
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                "PYTHON",
+                "--default-index",
+                "http://mirrors.aliyun.com/pypi/simple",
+                "--allow-insecure-host",
+                "mirrors.aliyun.com",
+                "--target",
+                "PACKAGES",
+                "--upgrade",
+                "demo-package>=1.0.0",
+            ],
+            id="source-uv-aliyun",
+        ),
+    ],
+)
+def test_build_install_command_uses_expected_index_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    frozen: bool,
+    index_candidate: PackageIndexCandidate,
+    expected_command: list[str],
+) -> None:
+    """不同运行模式下应为安装命令注入正确的索引源参数。"""
+
+    package_dir = tmp_path / "packages"
+    python_executable = tmp_path / "python.exe"
+    monkeypatch.setattr("src.common.runtime_paths.sys.frozen", frozen, raising=False)
+    monkeypatch.setattr("src.common.process_launcher.sys.frozen", frozen, raising=False)
+    monkeypatch.setattr("src.plugin_runtime.dependency_pipeline.sys.frozen", frozen, raising=False)
+    if frozen:
+        monkeypatch.setattr("src.common.process_launcher.sys.executable", str(tmp_path / "MaiBot.exe"))
+    else:
+        monkeypatch.setattr("src.plugin_runtime.dependency_pipeline.sys.executable", str(python_executable))
+    monkeypatch.setattr(
+        "src.plugin_runtime.dependency_pipeline.shutil.which",
+        lambda name: "uv" if name == "uv" and not frozen else None,
+    )
+
+    command = PluginDependencyPipeline._build_install_command(
+        ["demo-package>=1.0.0"],
+        package_dir,
+        index_candidate,
+    )
+
+    normalized_command = [
+        "MaiBot.exe" if entry == str(tmp_path / "MaiBot.exe") else entry for entry in command
+    ]
+    normalized_command = ["PYTHON" if entry == str(python_executable) else entry for entry in normalized_command]
+    normalized_command = ["PACKAGES" if entry == str(package_dir) else entry for entry in normalized_command]
+
+    assert normalized_command == expected_command
+
+
 def test_build_install_command_uses_internal_pip_mode_when_frozen(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -392,7 +538,11 @@ def test_build_install_command_uses_internal_pip_mode_when_frozen(
     monkeypatch.setattr("src.plugin_runtime.dependency_pipeline.sys.frozen", True, raising=False)
     monkeypatch.setattr("src.common.process_launcher.sys.executable", str(tmp_path / "MaiBot.exe"))
 
-    command = PluginDependencyPipeline._build_install_command(["demo-package>=1.0.0"], tmp_path / "packages")
+    command = PluginDependencyPipeline._build_install_command(
+        ["demo-package>=1.0.0"],
+        tmp_path / "packages",
+        PackageIndexCandidate("官方 PyPI", "https://pypi.org/simple"),
+    )
 
     assert command == [
         str(tmp_path / "MaiBot.exe"),
@@ -400,6 +550,8 @@ def test_build_install_command_uses_internal_pip_mode_when_frozen(
         "--disable-pip-version-check",
         "--no-input",
         "--no-warn-script-location",
+        "--index-url",
+        "https://pypi.org/simple",
         "--target",
         str(tmp_path / "packages"),
         "--upgrade",

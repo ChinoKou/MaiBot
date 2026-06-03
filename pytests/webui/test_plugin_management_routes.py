@@ -214,6 +214,50 @@ def test_install_plugin_backfills_missing_manifest_id(client: TestClient, monkey
     assert manifest["id"] == "market.legacy"
 
 
+def test_install_plugin_handoffs_runtime_with_manifest_plugin_id(client: TestClient, monkeypatch):
+    from src.plugin_runtime import integration as integration_module
+
+    runtime_handoff_calls = []
+
+    class FakeGitMirrorService:
+        async def clone_repository(self, **kwargs):
+            target_path = kwargs["target_path"]
+            target_path.mkdir(parents=True, exist_ok=True)
+            (target_path / "_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "manifest_version": 2,
+                        "id": "author.declared",
+                        "name": "Declared Plugin",
+                        "version": "1.0.0",
+                        "author": {"name": "author"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {"success": True}
+
+    class FakeRuntimeManager:
+        async def sync_and_load_plugin_globally(self, plugin_id, reason="manual"):
+            runtime_handoff_calls.append((plugin_id, reason))
+            return True
+
+    monkeypatch.setattr(management_module, "get_git_mirror_service", lambda: FakeGitMirrorService())
+    monkeypatch.setattr(integration_module, "get_plugin_runtime_manager", lambda: FakeRuntimeManager())
+
+    response = client.post(
+        "/api/webui/plugins/install",
+        json={
+            "plugin_id": "market.plugin",
+            "repository_url": "https://github.com/author/declared",
+            "branch": "main",
+        },
+    )
+
+    assert response.status_code == 200
+    assert runtime_handoff_calls == [("author.declared", "install")]
+
+
 def test_install_plugin_cleans_config_only_residue(client: TestClient, monkeypatch):
     residue_path, _ = support_module.get_plugin_candidate_paths("market.residue")
     residue_path.mkdir(parents=True)

@@ -274,6 +274,16 @@ async def _release_plugin_runtime_before_delete(plugin_id: str, plugin_path: Pat
         return False
 
 
+async def _handoff_installed_plugin_to_runtime(plugin_id: str) -> bool:
+    try:
+        from src.plugin_runtime.integration import get_plugin_runtime_manager
+
+        return await get_plugin_runtime_manager().sync_and_load_plugin_globally(plugin_id, reason="install")
+    except Exception as exc:
+        logger.warning(f"插件 {plugin_id} 安装后运行时接管失败: {exc}")
+        return False
+
+
 @router.post("/install")
 async def install_plugin(request: InstallPluginRequest, maibot_session: Optional[str] = Cookie(None)) -> Dict[str, Any]:
     require_plugin_token(maibot_session)
@@ -377,6 +387,7 @@ async def install_plugin(request: InstallPluginRequest, maibot_session: Optional
                     manifest["id"] = plugin_id
                     with open(manifest_path, "w", encoding="utf-8") as file_obj:
                         json.dump(manifest, file_obj, ensure_ascii=False, indent=2)
+                runtime_plugin_id = str(manifest.get("id") or plugin_id).strip()
             except Exception as e:
                 await update_progress(
                     stage="error",
@@ -396,6 +407,17 @@ async def install_plugin(request: InstallPluginRequest, maibot_session: Optional
             if staging_path.exists():
                 remove_tree(staging_path)
             raise
+
+        await update_progress(
+            stage="loading",
+            progress=98,
+            message="正在接管插件运行时并同步依赖...",
+            operation="install",
+            plugin_id=plugin_id,
+        )
+        runtime_handoff_ok = await _handoff_installed_plugin_to_runtime(runtime_plugin_id)
+        if not runtime_handoff_ok:
+            logger.warning(f"插件 {runtime_plugin_id} 安装完成，但运行时接管未立即生效")
 
         await update_progress(
             stage="success",

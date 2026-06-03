@@ -1220,6 +1220,64 @@ class PluginRuntimeManager(
         )
         return reloaded and normalized_plugin_id in supervisor.get_loaded_plugin_ids()
 
+    async def sync_and_load_plugin_globally(self, plugin_id: str, reason: str = "manual") -> bool:
+        """同步插件依赖后，立即接管并加载指定插件。
+
+        该入口用于安装新插件后的显式运行时接管，避免首次生效依赖
+        file watcher 对新增目录事件的间接推断。
+
+        Args:
+            plugin_id: 目标插件 ID。
+            reason: 本次运行时接管原因。
+
+        Returns:
+            bool: 插件是否已在当前运行时中成功生效。
+        """
+
+        if not self._started:
+            return True
+
+        normalized_plugin_id = str(plugin_id or "").strip()
+        if not normalized_plugin_id:
+            return False
+
+        builtin_dirs, third_party_dirs = self._resolve_runtime_plugin_dirs()
+        runtime_plugin_dirs = [plugin_dir.resolve() for plugin_dir in (*builtin_dirs, *third_party_dirs)]
+        current_plugin_dirs = [Path(plugin_dir).resolve() for plugin_dir in self._iter_plugin_dirs()]
+
+        if duplicate_plugin_ids := self._find_duplicate_plugin_ids(runtime_plugin_dirs):
+            details = "; ".join(
+                f"{duplicate_plugin_ids_key}: {', '.join(str(path) for path in paths)}"
+                for duplicate_plugin_ids_key, paths in sorted(duplicate_plugin_ids.items())
+            )
+            logger.error(f"检测到重复插件 ID，拒绝执行插件运行时接管: {details}")
+            return False
+
+        dependency_sync_state = await self._sync_plugin_dependencies(runtime_plugin_dirs)
+
+        restart_reason: Optional[str] = None
+        if set(current_plugin_dirs) != set(runtime_plugin_dirs):
+            restart_reason = f"{reason}_plugin_dirs_changed"
+        elif dependency_sync_state.environment_changed:
+            restart_reason = f"{reason}_dependency_install"
+        elif dependency_sync_state.blocked_changed_plugin_ids:
+            restart_reason = f"{reason}_blocklist_changed"
+
+        if restart_reason is not None:
+            restarted = await self._restart_supervisors(restart_reason)
+            if not restarted:
+                logger.warning(f"插件 {normalized_plugin_id} 依赖同步后运行时接管失败: {restart_reason}")
+                return False
+            if self.get_plugin_load_statuses().get(normalized_plugin_id) == "success":
+                return True
+        else:
+            self._refresh_plugin_config_watch_subscriptions()
+
+        loaded = await self.load_plugin_globally(normalized_plugin_id, reason=reason)
+        if not loaded:
+            logger.warning(f"插件 {normalized_plugin_id} 依赖同步后自动加载失败")
+        return loaded
+
     @classmethod
     def _find_duplicate_plugin_ids(cls, plugin_dirs: List[Path]) -> Dict[str, List[Path]]:
         """扫描插件目录，找出被多个目录重复声明的插件 ID。"""
@@ -1250,7 +1308,7 @@ class PluginRuntimeManager(
         watcher = FileWatcher(
             paths=watch_paths,
             debounce_ms=600,
-            callback_timeout_s=30.0,
+            callback_timeout_s=15.0,
             callback_failure_threshold=3,
             callback_cooldown_s=30.0,
         )
