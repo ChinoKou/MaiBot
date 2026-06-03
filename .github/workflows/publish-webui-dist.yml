@@ -1,13 +1,13 @@
 name: Publish WebUI Dist
 
 on:
-  push:
-    branches:
-      - main
-      - dev
-      - r-dev
-    paths:
-      - "dashboard/**"
+  # push:
+  #   branches:
+  #     - main
+  #     - dev
+  #     - r-dev
+  #   paths:
+  #     - "dashboard/**"
   workflow_dispatch:
 
 permissions:

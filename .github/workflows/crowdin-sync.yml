@@ -2,17 +2,17 @@ name: Crowdin Sync
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 */6 * * *"
-  push:
-    branches:
-      - main
-      - r-dev
-    paths:
-      - "crowdin.yml"
-      - "locales/zh-CN/*.json"
-      - "prompts/zh-CN/**/*.prompt"
-      - "dashboard/src/i18n/locales/zh.json"
+  # schedule:
+  #   - cron: "17 */6 * * *"
+  # push:
+  #   branches:
+  #     - main
+  #     - r-dev
+  #   paths:
+  #     - "crowdin.yml"
+  #     - "locales/zh-CN/*.json"
+  #     - "prompts/zh-CN/**/*.prompt"
+  #     - "dashboard/src/i18n/locales/zh.json"
 
 permissions:
   contents: write
