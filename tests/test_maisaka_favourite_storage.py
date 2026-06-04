@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.maisaka import favourite_storage as storage
+from src.maisaka.favourite import storage
 
 
 def test_favourite_storage_saves_text_and_rejects_duplicate_name(

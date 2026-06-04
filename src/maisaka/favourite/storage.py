@@ -14,10 +14,11 @@ import re
 import uuid
 
 from src.common.logger import get_logger
+from src.common.runtime_paths import get_data_dir
 
 logger = get_logger("maisaka_favourite_storage")
 
-FAVOURITE_ROOT = Path(__file__).parent.parent.parent / "data" / "favourite"
+FAVOURITE_ROOT = (get_data_dir() / "favourite").resolve()
 MANIFEST_FILENAME = "manifest.json"
 MANIFEST_VERSION = 1
 SHARED_POOL_KEY = "share"
