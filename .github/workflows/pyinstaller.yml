@@ -36,10 +36,10 @@ jobs:
             os: ubuntu-24.04-arm
           - platform_family: macos
             artifact_suffix: macos_x86_64
-            os: macos-13
+            os: macos-15-intel
           - platform_family: macos
             artifact_suffix: macos_apple_silicon
-            os: macos-14
+            os: macos-15
 
     steps:
       - name: Checkout
@@ -71,10 +71,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
+          ARTIFACT_DIR: build-artifacts
           ARTIFACT_NAME: MaiBot_${{ matrix.artifact_suffix }}_${{ env.RELEASE_TAG }}.zip
         run: |
-          New-Item -ItemType Directory -Force -Path ".artifacts" | Out-Null
-          $ArtifactPath = Join-Path (Resolve-Path ".artifacts").Path $env:ARTIFACT_NAME
+          New-Item -ItemType Directory -Force -Path $env:ARTIFACT_DIR | Out-Null
+          $ArtifactPath = Join-Path (Resolve-Path $env:ARTIFACT_DIR).Path $env:ARTIFACT_NAME
           Push-Location "dist"
           try {
               7z a -tzip -mx=9 $ArtifactPath "MaiBot"
@@ -87,28 +88,30 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         env:
+          ARTIFACT_DIR: build-artifacts
           ARTIFACT_PREFIX: MaiBot_${{ matrix.artifact_suffix }}_${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
-          mkdir -p .artifacts
-          tar -cf - -C dist MaiBot | xz -T0 -9e > ".artifacts/${ARTIFACT_PREFIX}.tar.xz"
-          tar -cf - -C dist MaiBot | gzip -9 -n > ".artifacts/${ARTIFACT_PREFIX}.tar.gz"
+          mkdir -p "$ARTIFACT_DIR"
+          tar -cf - -C dist MaiBot | xz -T0 -9e > "$ARTIFACT_DIR/${ARTIFACT_PREFIX}.tar.xz"
+          tar -cf - -C dist MaiBot | gzip -9 -n > "$ARTIFACT_DIR/${ARTIFACT_PREFIX}.tar.gz"
 
       - name: Archive macOS package
         if: runner.os == 'macOS'
         shell: bash
         env:
+          ARTIFACT_DIR: build-artifacts
           ARTIFACT_PREFIX: MaiBot_${{ matrix.artifact_suffix }}_${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
-          mkdir -p .artifacts
-          tar -cf - -C dist MaiBot | gzip -9 -n > ".artifacts/${ARTIFACT_PREFIX}.tar.gz"
+          mkdir -p "$ARTIFACT_DIR"
+          tar -cf - -C dist MaiBot | gzip -9 -n > "$ARTIFACT_DIR/${ARTIFACT_PREFIX}.tar.gz"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v7
         with:
           name: MaiBot_${{ matrix.artifact_suffix }}
-          path: .artifacts/MaiBot_${{ matrix.artifact_suffix }}_${{ env.RELEASE_TAG }}*
+          path: build-artifacts/MaiBot_${{ matrix.artifact_suffix }}_${{ env.RELEASE_TAG }}*
           if-no-files-found: error
           retention-days: 1
 
