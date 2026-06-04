@@ -608,24 +608,6 @@ class ChatConfig(ConfigBase):
     )
     """开启后对回复时机判定更精确，可能消耗更多token"""
 
-    enable_replyer_format_output: bool = Field(
-        default=False,
-        json_schema_extra={
-            "label": {
-                "zh_CN": "Replyer 格式化输出",
-                "en_US": "Replyer formatted output",
-                "ja_JP": "Replyer フォーマット出力",
-            },
-            "x-widget": "switch",
-            "x-icon": "braces",
-            "advanced": True,
-        },
-    )
-    """
-    是否允许 replyer 输出 <text>、<at>、<emoji>、<image> 等格式化片段，
-    并在发送前解析为真实消息组件，可能会影响回复表现
-    """
-
     enable_reply_quote: bool = Field(
         default=True,
         json_schema_extra={
@@ -775,6 +757,101 @@ class ChatConfig(ConfigBase):
     """
     _wrap_思考频率规则列表，支持按聊天流/按日内时段配置。
     """
+
+
+class ExperimentalConfig(ConfigBase):
+    """实验性功能配置类"""
+
+    __ui_label__ = "实验性功能"
+    __ui_icon__ = "flask-conical"
+
+    enable_replyer_format_output: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "Replyer 格式化输出",
+                "en_US": "Replyer formatted output",
+                "ja_JP": "Replyer フォーマット出力",
+            },
+            "x-widget": "switch",
+            "x-icon": "braces",
+            "advanced": True,
+        },
+    )
+    """
+    是否允许 replyer 输出 <text>、<at>、<emoji>、<image> 等格式化片段，
+    并在发送前解析为真实消息组件，可能会影响回复表现
+    """
+
+    focus_mode: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "Focus 模式",
+                "en_US": "Focus mode",
+                "ja_JP": "Focus モード",
+            },
+            "x-widget": "switch",
+            "x-icon": "target",
+            "advanced": True,
+        },
+    )
+    """开启后仍正常创建聊天流，但同一时间只有一个 Maisaka 处于活跃关注状态，且忽略聊天频率控制"""
+
+    focus_on_private: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "私聊启用 Focus",
+                "en_US": "Focus private chats",
+                "ja_JP": "私聊で Focus を有効化",
+            },
+            "x-widget": "switch",
+            "x-icon": "message-circle",
+            "advanced": True,
+        },
+    )
+    """关闭时，Focus 模式只作用于群聊；开启后，群聊和私聊都会进入 Focus。"""
+
+    focus_cool_time: int = Field(
+        default=120,
+        ge=1,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "Focus 冷却时间",
+                "en_US": "Focus cool time",
+                "ja_JP": "Focus クールタイム",
+            },
+            "x-widget": "input",
+            "x-icon": "timer",
+            "x-layout": "inline-right",
+            "x-input-width": "12rem",
+            "x-row": "focus-cool-time",
+            "advanced": True,
+        },
+    )
+    """Focus 模式下关注聊天超过该秒数没有进入循环时，会被其他聊天的新消息唤醒一次"""
+
+
+class FavouriteConfig(ConfigBase):
+    """麦麦收藏配置类"""
+
+    __ui_label__ = "收藏"
+    __ui_icon__ = "star"
+
+    isolate_by_chat: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "按聊天隔离收藏池",
+                "en_US": "Isolate favourites by chat",
+                "ja_JP": "チャットごとにお気に入りを分離",
+            },
+            "x-widget": "switch",
+            "x-icon": "folder-lock",
+        },
+    )
+    """是否按聊天流隔离 favourite 池；开启后保存到 data/favourite/<chat_id>，关闭后保存到 data/favourite/share。"""
 
 
 class MessageReceiveConfig(ConfigBase):
@@ -2833,7 +2910,7 @@ class ChatStreamGroup(ConfigBase):
 class ExpressionConfig(ConfigBase):
     """表达配置类"""
 
-    __ui_label__ = "表达与黑话"
+    __ui_label__ = "学习"
     __ui_icon__ = "pen-tool"
 
     expression_checked_only: bool = Field(
@@ -2994,7 +3071,7 @@ class VoiceConfig(ConfigBase):
 class EmojiConfig(ConfigBase):
     """表情包配置类"""
 
-    __ui_label__ = "表情包"
+    __ui_label__ = "表情"
     __ui_icon__ = "smile"
 
     emoji_send_num: int = Field(
@@ -3316,7 +3393,7 @@ class ResponseSplitterConfig(ConfigBase):
 class LogConfig(ConfigBase):
     """日志配置类"""
 
-    __ui_label__ = "调试与日志"
+    __ui_label__ = "调试"
     __ui_icon__ = "file-text"
 
     date_style: str = Field(
@@ -4391,7 +4468,7 @@ class MCPConfig(ConfigBase):
 class PluginConfig(ConfigBase):
     """插件管理配置类"""
 
-    __ui_label__ = "插件管理"
+    __ui_label__ = "插件"
     __ui_icon__ = "shield"
 
     permission: list[str] = Field(
@@ -4535,7 +4612,8 @@ class PluginRuntimeRenderConfig(ConfigBase):
 class PluginRuntimeConfig(ConfigBase):
     """插件运行时配置类"""
 
-    __ui_label__ = "插件运行时"
+    __ui_parent__ = "plugin"
+    __ui_label__ = "运行时"
     __ui_icon__ = "puzzle"
 
     enabled: bool = Field(

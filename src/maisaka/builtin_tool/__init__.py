@@ -9,11 +9,17 @@ from src.config.config import global_config
 from src.core.tooling import ToolAvailabilityContext, ToolExecutionContext, ToolExecutionResult, ToolInvocation, ToolSpec
 from src.llm_models.payload_content.tool_option import ToolDefinitionInput
 
+from .browser_content import get_tool_spec as get_browser_content_tool_spec
+from .browser_content import handle_tool as handle_browser_content_tool
 from .context import BuiltinToolRuntimeContext
 from .continue_tool import get_tool_spec as get_continue_tool_spec
 from .continue_tool import handle_tool as handle_continue_tool
 from .finish import get_tool_spec as get_finish_tool_spec
 from .finish import handle_tool as handle_finish_tool
+from .fetch_histroy import get_tool_spec as get_fetch_histroy_tool_spec
+from .fetch_histroy import handle_tool as handle_fetch_histroy_tool
+from .get_content import get_tool_spec as get_get_content_tool_spec
+from .get_content import handle_tool as handle_get_content_tool
 from .no_action import get_tool_spec as get_no_action_tool_spec
 from .no_action import handle_tool as handle_no_action_tool
 from .query_jargon import get_tool_spec as get_query_jargon_tool_spec
@@ -24,10 +30,14 @@ from .query_person_profile import get_tool_spec as get_query_person_profile_tool
 from .query_person_profile import handle_tool as handle_query_person_profile_tool
 from .reply import get_tool_spec as get_reply_tool_spec
 from .reply import handle_tool as handle_reply_tool
+from .save_content import get_tool_spec as get_save_content_tool_spec
+from .save_content import handle_tool as handle_save_content_tool
 from .send_emoji import get_tool_spec as get_send_emoji_tool_spec
 from .send_emoji import handle_tool as handle_send_emoji_tool
 from .send_image import get_tool_spec as get_send_image_tool_spec
 from .send_image import handle_tool as handle_send_image_tool
+from .switch_chat import get_tool_spec as get_switch_chat_tool_spec
+from .switch_chat import handle_tool as handle_switch_chat_tool
 from .tool_search import get_tool_spec as get_tool_search_tool_spec
 from .tool_search import handle_tool as handle_tool_search_tool
 from .view_complex_message import get_tool_spec as get_view_complex_message_tool_spec
@@ -101,7 +111,17 @@ BUILTIN_TOOL_ENTRIES: List[BuiltinToolEntry] = [
     ),
     BuiltinToolEntry("send_emoji", get_send_emoji_tool_spec, handle_send_emoji_tool, stage="action"),
     BuiltinToolEntry("send_image", get_send_image_tool_spec, handle_send_image_tool, stage="action"),
+    BuiltinToolEntry("save_content", get_save_content_tool_spec, handle_save_content_tool, stage="action"),
+    BuiltinToolEntry("browser_content", get_browser_content_tool_spec, handle_browser_content_tool, stage="action"),
+    BuiltinToolEntry("get_content", get_get_content_tool_spec, handle_get_content_tool, stage="action"),
     BuiltinToolEntry("tool_search", get_tool_search_tool_spec, handle_tool_search_tool, stage="action"),
+    BuiltinToolEntry(
+        "fetch_histroy",
+        get_fetch_histroy_tool_spec,
+        handle_fetch_histroy_tool,
+        stage="action",
+    ),
+    BuiltinToolEntry("switch_chat", get_switch_chat_tool_spec, handle_switch_chat_tool, stage="action"),
 ]
 
 
@@ -128,15 +148,19 @@ def _is_builtin_tool_enabled_by_config(entry: BuiltinToolEntry) -> bool:
     """根据全局配置判断内置工具是否应暴露。"""
 
     if entry.name in {"send_emoji", "send_image"}:
-        chat_config = getattr(global_config, "chat", None)
-        if bool(getattr(chat_config, "enable_replyer_format_output", False)):
+        if bool(global_config.experimental.enable_replyer_format_output):
             return False
+    if entry.name in {"fetch_histroy", "switch_chat"}:
+        return bool(global_config.experimental.focus_mode)
     return True
 
 
 def _is_builtin_tool_available(entry: BuiltinToolEntry, context: ToolAvailabilityContext) -> bool:
     """判断内置工具是否适用于当前聊天。"""
 
+    if entry.name in {"fetch_histroy", "switch_chat"}:
+        if context.is_group_chat is False and not bool(global_config.experimental.focus_on_private):
+            return False
     if entry.chat_scope == "all":
         return True
     if entry.chat_scope == "group":
