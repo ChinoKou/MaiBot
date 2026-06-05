@@ -559,6 +559,12 @@ class MaisakaReasoningEngine:
 
                 try:
                     timing_gate_required = self._is_independent_timing_gate_enabled()
+                    merged_timing_backoff_required = (
+                        not bool(global_config.chat.enable_independent_timing_gate)
+                        and not focus_mode_manager.is_enabled_for_chat(
+                            is_group_chat=self._runtime.chat_stream.is_group_session
+                        )
+                    )
                     if not timing_gate_required:
                         self._runtime._consume_force_next_timing_continue_reason()
                     round_index = 0
@@ -622,11 +628,10 @@ class MaisakaReasoningEngine:
                                     timing_tool_results,
                                     timing_tool_monitor_results,
                                 ) = await self._run_timing_gate(anchor_message)
-                                timing_elapsed_seconds = time.time() - timing_started_at
-                                if timing_action == "no_action":
-                                    await self._runtime._wait_for_timing_gate_non_continue_cooldown(
-                                        timing_elapsed_seconds
-                                    )
+                                self._runtime.record_no_action_decision_result(
+                                    timing_action,
+                                    source="timing_gate",
+                                )
                                 timing_duration_ms = (time.time() - timing_started_at) * 1000
                                 cycle_detail.time_records["timing_gate"] = timing_duration_ms / 1000
                                 await emit_timing_gate_result(
@@ -719,14 +724,15 @@ class MaisakaReasoningEngine:
                                     anchor_message,
                                 )
                                 cycle_detail.time_records["tool_calls"] = time.time() - tool_started_at
+                                if merged_timing_backoff_required:
+                                    planner_action_name = (
+                                        pause_tool_name if should_pause and pause_tool_name else "continue"
+                                    )
+                                    self._runtime.record_no_action_decision_result(
+                                        planner_action_name,
+                                        source="planner",
+                                    )
                                 if should_pause:
-                                    if (
-                                        pause_tool_name == "no_action"
-                                        and not self._is_independent_timing_gate_enabled()
-                                    ):
-                                        await self._runtime._wait_for_timing_gate_non_continue_cooldown(
-                                            time.time() - planner_started_at
-                                        )
                                     if pause_tool_name == "finish":
                                         cycle_end_reason = "finish"
                                         cycle_end_detail = "Planner 调用 finish，结束本轮思考并等待新消息。"
@@ -740,6 +746,13 @@ class MaisakaReasoningEngine:
                                 cycle_end_reason = "tool_continue"
                                 cycle_end_detail = "Planner 工具执行完成，继续下一轮内部思考。"
                                 continue
+
+                            if merged_timing_backoff_required:
+                                planner_action_name = "content" if response.content else "empty"
+                                self._runtime.record_no_action_decision_result(
+                                    planner_action_name,
+                                    source="planner",
+                                )
 
                             if not response.content:
                                 cycle_end_reason = "empty_planner_response"

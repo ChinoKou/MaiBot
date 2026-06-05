@@ -61,6 +61,14 @@ MAX_INTERNAL_ROUNDS = 10
 MAX_RETAINED_MESSAGE_CACHE_SIZE = 200
 CONTEXT_RESTORE_FILL_RATIO = 0.5
 EXTERNAL_MESSAGE_INTERVAL_SAMPLE_WINDOW_SECONDS = 1800.0
+# 低于该间隔的相邻外部消息视为同一阵「连发」抖动，不计入平均消息间隔统计，
+# 避免连发把平均间隔严重拉低、令空窗补偿过早触发。
+# 注意：判定只看时间间隔、不区分发言者——同一人连续敲几条短消息是常见成因，
+# 但跨发言者的快速对答同样会被过滤。
+EXTERNAL_MESSAGE_BURST_INTERVAL_SECONDS = 5.0
+# 空窗补偿所用平均消息间隔的下限：即便统计值偏小也不会低于该值，
+# 限制「沉默时间」被折算成消息的速度，避免低活跃群聊里反复触发回复。
+IDLE_COMPENSATION_MIN_AVERAGE_INTERVAL_SECONDS = 30.0
 
 
 class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMixin):
@@ -120,6 +128,8 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         self._planner_interrupt_requested = False
         self._planner_interrupt_consecutive_count = 0
         self._consecutive_no_action_count = 0
+        self._no_action_backoff_count = 0
+        self._no_action_backoff_until = 0.0
         self._current_action_tool_names: set[str] = set()
         self.discovered_tool_names: set[str] = set()
         self.deferred_tool_specs_by_name: dict[str, ToolSpec] = {}
@@ -159,10 +169,28 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         return max(0, int(global_config.chat.planner_interrupt_max_consecutive_count))
 
     @property
-    def _timing_gate_non_continue_cooldown_seconds(self) -> float:
-        """返回当前实时生效的 Timing Gate 非 continue 冷却时间。"""
+    def _no_action_backoff_base_seconds(self) -> float:
+        """返回当前实时生效的 no_action 退避基准秒数。"""
 
-        return max(0.0, float(global_config.chat.timing_gate_non_continue_cooldown_seconds))
+        return max(0.0, float(global_config.chat.no_action_backoff_base_seconds))
+
+    @property
+    def _no_action_backoff_cap_seconds(self) -> float:
+        """返回当前实时生效的 no_action 退避上限秒数。"""
+
+        return max(0.0, float(global_config.chat.no_action_backoff_cap_seconds))
+
+    @property
+    def _no_action_backoff_start_count(self) -> int:
+        """返回连续第几次 no_action 后开始退避。"""
+
+        return max(1, int(global_config.chat.no_action_backoff_start_count))
+
+    @property
+    def _no_action_backoff_bypass_pending_count(self) -> int:
+        """返回退避期间直接绕过所需的待处理消息数。"""
+
+        return max(0, int(global_config.chat.no_action_backoff_bypass_pending_count))
 
     @property
     def _enable_expression_use(self) -> bool:
@@ -638,7 +666,6 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         reply_text: str,
         reply_segments: list[str],
         planner_reasoning: str,
-        reference_info: str,
         tool_context: Optional[dict[str, Any]] = None,
         send_results: Optional[list[dict[str, Any]]] = None,
         reply_metadata: Optional[dict[str, Any]] = None,
@@ -666,7 +693,6 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
                 reply_text=reply_text,
                 reply_segments=reply_segments,
                 planner_reasoning=planner_reasoning,
-                reference_info=reference_info,
                 tool_context=tool_context,
                 send_results=send_results,
                 reply_metadata=enriched_reply_metadata,
@@ -737,13 +763,25 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
             self._recent_external_message_intervals.popleft()
 
     def _get_recent_average_external_message_interval(self) -> Optional[float]:
-        """获取最近 30 分钟外部消息的平均接收间隔。"""
+        """获取最近 30 分钟外部消息的平均接收间隔。
+
+        返回值会施加 ``IDLE_COMPENSATION_MIN_AVERAGE_INTERVAL_SECONDS`` 下限，
+        避免统计值过小导致空窗补偿把沉默时间过快折算成消息、反复触发回复。
+
+        见过外部消息但暂无可用间隔样本时（如启动后只收到一阵全被 burst 过滤的连发、
+        或样本已因超出 30 分钟窗口而全部过期），回退到下限值作为保守估计，
+        确保空窗补偿与延迟自唤醒不会因返回 None 而失效、令待处理消息在
+        没有新消息到来时永久挂起；从未见过外部消息时仍返回 None。
+        """
         self._prune_recent_external_message_intervals()
         if not self._recent_external_message_intervals:
-            return None
+            if self._last_external_message_received_at is None:
+                return None
+            return IDLE_COMPENSATION_MIN_AVERAGE_INTERVAL_SECONDS
 
         total_interval = sum(interval for _, interval in self._recent_external_message_intervals)
-        return total_interval / len(self._recent_external_message_intervals)
+        average_interval = total_interval / len(self._recent_external_message_intervals)
+        return max(average_interval, IDLE_COMPENSATION_MIN_AVERAGE_INTERVAL_SECONDS)
 
     def _record_external_message_interval(self, message: SessionMessage, received_at: float) -> None:
         """记录最近外部消息之间的接收间隔，用于低频触发补偿。"""
@@ -758,7 +796,8 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
             return
 
         message_interval = max(0.0, received_at - previous_received_at)
-        if message_interval <= 0:
+        if message_interval < EXTERNAL_MESSAGE_BURST_INTERVAL_SECONDS:
+            # 连发抖动：同一阵内的短间隔不代表真实发言节奏，跳过以免拉低平均间隔。
             return
 
         self._recent_external_message_intervals.append((received_at, message_interval))
@@ -823,14 +862,29 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         pending_count: int,
         trigger_threshold: int,
     ) -> bool:
-        """在新消息不足阈值时，按空窗时间折算补齐触发条件。"""
+        """在新消息不足阈值时，按空窗时间折算补齐触发条件。
+
+        空窗折算量被限制在 ``trigger_threshold - 1`` 以内，确保至少要有一条真实新消息
+        才可能触发，杜绝纯靠沉默累积反复唤醒回复。
+        """
+        # 双保险（与下方折算封顶互为冗余）：纯沉默（pending_count == 0）一律不触发。
+        # 二者任一存在即可保证该不变量，重构时请勿因看似重复而删除其一。
+        if pending_count < 1:
+            return False
+
         average_message_interval = self._get_recent_average_external_message_interval()
         if average_message_interval is None or average_message_interval <= 0:
             return False
 
         last_external_received_at = self._last_external_message_received_at or self._last_message_received_at
         idle_seconds = max(0.0, time.time() - last_external_received_at)
-        equivalent_message_count = pending_count + idle_seconds / average_message_interval
+        # 折算量封顶到 trigger_threshold - 1：与上方 pending_count 守卫互为冗余的双保险，
+        # 即便空窗无限长，纯沉默（pending_count == 0）也无法跨过阈值。
+        idle_equivalent_count = min(
+            idle_seconds / average_message_interval,
+            float(max(0, trigger_threshold - 1)),
+        )
+        equivalent_message_count = pending_count + idle_equivalent_count
         return equivalent_message_count >= trigger_threshold
 
     def _cancel_deferred_message_turn_task(self) -> None:
@@ -890,6 +944,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         self._force_next_timing_continue = True
         self._force_next_timing_message_id = message.message_id
         self._force_next_timing_reason = trigger_reason
+        self._reset_no_action_backoff()
 
         if was_armed:
             logger.info(
@@ -944,19 +999,88 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
 
         return self._force_next_timing_continue
 
-    async def _wait_for_timing_gate_non_continue_cooldown(self, elapsed_seconds: float) -> None:
-        """仅对 Timing Gate 的 no_action 动作应用冷却窗口。"""
+    def _get_no_action_backoff_seconds(self) -> float:
+        """按连续 no_action 次数计算下一次退避秒数。"""
 
-        cooldown_seconds = self._timing_gate_non_continue_cooldown_seconds
-        if cooldown_seconds <= 0:
+        base_seconds = self._no_action_backoff_base_seconds
+        cap_seconds = self._no_action_backoff_cap_seconds
+        if base_seconds <= 0 or cap_seconds <= 0:
+            return 0.0
+
+        start_count = self._no_action_backoff_start_count
+        no_action_count = self._no_action_backoff_count
+        if no_action_count < start_count:
+            return 0.0
+
+        exponent = max(0, no_action_count - start_count)
+        return min(cap_seconds, base_seconds * (2**exponent))
+
+    def _reset_no_action_backoff(self) -> None:
+        """清理连续 no_action 退避状态。"""
+
+        self._no_action_backoff_count = 0
+        self._no_action_backoff_until = 0.0
+
+    def record_no_action_decision_result(self, action_name: str, *, source: str = "planner") -> None:
+        """记录决策结果并维护 no_action 退避状态。"""
+
+        if not self.chat_stream.is_group_session:
+            self._reset_no_action_backoff()
             return
 
-        remaining_seconds = cooldown_seconds - max(0.0, elapsed_seconds)
+        normalized_action_name = str(action_name).strip()
+        if normalized_action_name != "no_action":
+            self._reset_no_action_backoff()
+            return
+
+        self._no_action_backoff_count += 1
+        backoff_seconds = self._get_no_action_backoff_seconds()
+        if backoff_seconds <= 0:
+            self._no_action_backoff_until = 0.0
+            return
+
+        self._no_action_backoff_until = time.time() + backoff_seconds
+        logger.info(
+            f"{self.log_prefix} 连续 no_action 退避已更新: "
+            f"来源={source} "
+            f"连续次数={self._no_action_backoff_count} "
+            f"退避={backoff_seconds:.2f} 秒"
+        )
+
+    def _should_delay_for_no_action_backoff(self, pending_count: int) -> bool:
+        """判断当前消息触发是否应被 no_action 退避延迟。"""
+
+        if focus_mode_manager.is_enabled_for_chat(is_group_chat=self.chat_stream.is_group_session):
+            self._reset_no_action_backoff()
+            return False
+
+        if not self.chat_stream.is_group_session:
+            return False
+
+        backoff_until = self._no_action_backoff_until
+        if backoff_until <= 0:
+            return False
+
+        now = time.time()
+        remaining_seconds = backoff_until - now
         if remaining_seconds <= 0:
-            return
+            self._no_action_backoff_until = 0.0
+            return False
 
-        logger.info(f"{self.log_prefix} Timing Gate 非 continue 冷却中，等待 {remaining_seconds:.2f} 秒后结束")
-        await asyncio.sleep(remaining_seconds)
+        bypass_pending_count = self._no_action_backoff_bypass_pending_count
+        if bypass_pending_count > 0 and pending_count >= bypass_pending_count:
+            logger.info(
+                f"{self.log_prefix} no_action 退避被待处理消息数绕过: "
+                f"待处理={pending_count} 阈值={bypass_pending_count}"
+            )
+            return False
+
+        logger.debug(f"{self.log_prefix} no_action 退避中，延迟 {remaining_seconds:.2f} 秒后再检查")
+        self._cancel_deferred_message_turn_task()
+        self._deferred_message_turn_task = asyncio.create_task(
+            self._schedule_deferred_message_turn(remaining_seconds)
+        )
+        return True
 
     def _bind_planner_interrupt_flag(self, interrupt_flag: asyncio.Event) -> None:
         """绑定当前可打断请求使用的中断标记。"""
@@ -1334,6 +1458,9 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
             self._cancel_deferred_message_turn_task()
             self._message_turn_scheduled = True
             self._internal_turn_queue.put_nowait("message")
+            return
+
+        if self._should_delay_for_no_action_backoff(pending_count):
             return
 
         trigger_threshold = self._get_message_trigger_threshold()

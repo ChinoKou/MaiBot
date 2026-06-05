@@ -658,14 +658,14 @@ class ChatConfig(ConfigBase):
     )
     """planner如果遇到新消息，重新开始思考的次数"""
 
-    timing_gate_non_continue_cooldown_seconds: float = Field(
-        default=8,
+    no_action_backoff_base_seconds: float = Field(
+        default=15,
         ge=0,
         json_schema_extra={
             "label": {
-                "zh_CN": "Timing Gate 平滑",
-                "en_US": "Timing Gate non-continue cooldown",
-                "ja_JP": "Timing Gate 非 continue クールダウン",
+                "zh_CN": "no_action 退避基准",
+                "en_US": "no_action backoff base",
+                "ja_JP": "no_action バックオフ基準",
             },
             "x-widget": "input",
             "x-icon": "timer",
@@ -673,7 +673,58 @@ class ChatConfig(ConfigBase):
             "advanced": False,
         },
     )
-    """这个值决定了Timing Gate判断的最低时间间隔"""
+    """连续 no_action 后的退避基准秒数，0 表示不启用退避"""
+
+    no_action_backoff_cap_seconds: float = Field(
+        default=300,
+        ge=0,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "no_action 退避上限",
+                "en_US": "no_action backoff cap",
+                "ja_JP": "no_action バックオフ上限",
+            },
+            "x-widget": "input",
+            "x-icon": "timer-reset",
+            "x-description-display": "icon",
+            "advanced": True,
+        },
+    )
+    """连续 no_action 退避秒数上限"""
+
+    no_action_backoff_start_count: int = Field(
+        default=2,
+        ge=1,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "no_action 退避起点",
+                "en_US": "no_action backoff start",
+                "ja_JP": "no_action バックオフ開始",
+            },
+            "x-widget": "input",
+            "x-icon": "list-start",
+            "x-description-display": "icon",
+            "advanced": True,
+        },
+    )
+    """连续第几次 no_action 后开始退避"""
+
+    no_action_backoff_bypass_pending_count: int = Field(
+        default=6,
+        ge=0,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "no_action 退避绕过消息数",
+                "en_US": "no_action backoff bypass messages",
+                "ja_JP": "no_action バックオフ迂回メッセージ数",
+            },
+            "x-widget": "input",
+            "x-icon": "message-square-more",
+            "x-description-display": "icon",
+            "advanced": True,
+        },
+    )
+    """退避期间待处理消息达到该数量时直接绕过退避，0 表示不按消息数绕过"""
 
     group_chat_prompt: str = Field(
         default=(
@@ -812,6 +863,21 @@ class ExperimentalConfig(ConfigBase):
         },
     )
     """关闭时，Focus 模式只作用于群聊；开启后，群聊和私聊都会进入 Focus。"""
+
+    focus_groups: list["ChatStreamGroup"] = Field(
+        default_factory=list,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "Focus 互通组",
+                "en_US": "Focus sharing groups",
+                "ja_JP": "Focus 共有グループ",
+            },
+            "x-widget": "custom",
+            "x-icon": "users",
+            "advanced": True,
+        },
+    )
+    """_wrap_Focus 互通组；不配置时所有启用 Focus 的聊天共享一个 Focus；配置后只有同组聊天互通，不同组可同时 Focus。"""
 
     focus_cool_time: int = Field(
         default=120,
@@ -2905,6 +2971,9 @@ class ChatStreamGroup(ConfigBase):
         },
     )
     """_wrap_互通聊天流"""
+
+
+ExperimentalConfig.model_rebuild()
 
 
 class ExpressionConfig(ConfigBase):
